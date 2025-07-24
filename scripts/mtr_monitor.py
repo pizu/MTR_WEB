@@ -30,12 +30,12 @@ def run_mtr(target, source_ip=None):
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)
         else:
-            print(f"Error running mtr for {target}: return code {result.returncode}")
-            print("STDOUT:", result.stdout.strip())
-            print("STDERR:", result.stderr.strip())
+            print(f"[{datetime.now()}] Error running mtr for {target}")
+            print("  STDOUT:", result.stdout.strip())
+            print("  STDERR:", result.stderr.strip())
             return None
     except Exception as e:
-        print(f"Exception running mtr for {target}: {e}")
+        print(f"[{datetime.now()}] Exception running mtr for {target}: {e}")
         return None
 
 def ensure_rrd(rrd_path):
