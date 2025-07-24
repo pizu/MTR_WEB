@@ -22,20 +22,26 @@ def load_config(path):
         return yaml.safe_load(f)
 
 def run_mtr(target, source_ip=None):
+    import shutil
     cmd = ["mtr", "--json", "--report", "--report-cycles", "1", target]
     if source_ip:
         cmd = ["mtr", "--json", "--report", "--report-cycles", "1", "--source", source_ip, target]
+
+    print(f"[DEBUG] Running: {' '.join(cmd)}")
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        print(f"[DEBUG] Return code: {result.returncode}")
+        print(f"[DEBUG] STDOUT:\n{result.stdout.strip()}")
+        print(f"[DEBUG] STDERR:\n{result.stderr.strip()}")
+
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)
         else:
-            print(f"[{datetime.now()}] Error running mtr for {target}")
-            print("  STDOUT:", result.stdout.strip())
-            print("  STDERR:", result.stderr.strip())
+            print(f"[ERROR] mtr failed for {target}")
             return None
     except Exception as e:
-        print(f"[{datetime.now()}] Exception running mtr for {target}: {e}")
+        print(f"[EXCEPTION] mtr failed for {target}: {e}")
         return None
 
 def ensure_rrd(rrd_path):
