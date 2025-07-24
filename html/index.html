@@ -1,0 +1,30 @@
+<!-- index.html -->
+<!-- Simple HTML page to show graphs and logs for each target -->
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MTR Monitor</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .target { margin-bottom: 50px; }
+        .graph { max-width: 600px; margin: 10px 0; }
+        .log { background: #eee; padding: 10px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>MTR Monitoring Dashboard</h1>
+    <!-- Each target section gets generated dynamically via backend script or static copy -->
+    <div class="target">
+        <h2>Target: 8.8.8.8</h2>
+        <img class="graph" src="graphs/8.8.8.8_avg.png" alt="Avg Latency">
+        <img class="graph" src="graphs/8.8.8.8_loss.png" alt="Loss">
+        <img class="graph" src="graphs/8.8.8.8_last.png" alt="Last">
+        <img class="graph" src="graphs/8.8.8.8_best.png" alt="Best">
+        <h3>Logs</h3>
+        <div class="log">
+            <!-- Replace this section dynamically with logs/8.8.8.8.log -->
+        </div>
+    </div>
+</body>
+</html>

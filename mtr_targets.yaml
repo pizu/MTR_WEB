@@ -1,0 +1,14 @@
+# mtr_targets.yaml
+#
+# List of targets to monitor using MTR
+# Each entry includes an IP and an optional source IP
+
+targets:
+  - ip: 8.8.8.8
+    source_ip: 192.168.1.10
+  - ip: 1.1.1.1
+    source_ip: null
+
+mtr_settings:
+  count: 10
+  max_hops: 30
