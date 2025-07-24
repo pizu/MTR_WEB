@@ -7,3 +7,4 @@ log_directory: logs/
 rrd_directory: data/
 graph_output_directory: html/graphs/
 retention_days: 30
+max_hops: 30
