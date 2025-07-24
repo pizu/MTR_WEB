@@ -8,3 +8,4 @@ rrd_directory: data/
 graph_output_directory: html/graphs/
 retention_days: 30
 max_hops: 30
+log_lines_to_show: 30
