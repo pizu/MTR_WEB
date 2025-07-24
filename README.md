@@ -36,8 +36,11 @@ mtr_monitor/
 targets:
   - ip: 8.8.8.8
     source_ip: 192.168.1.10
+    description: Google Public DNS
+
   - ip: 1.1.1.1
     source_ip: null
+    description: Cloudflare DNS
 
 mtr_settings:
   count: 10
