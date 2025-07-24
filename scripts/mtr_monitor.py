@@ -23,9 +23,9 @@ def load_config(path):
 
 def run_mtr(target, source_ip=None):
     import shutil
-    cmd = ["mtr", "--json", "--report", "--report-cycles", "1", target]
+    cmd = ["mtr", "--json", "--report-cycles", "1", target]
     if source_ip:
-        cmd = ["mtr", "--json", "--report", "--report-cycles", "1", "--source", source_ip, target]
+        cmd = ["mtr", "--json", "--report-cycles", "1", "--source", source_ip, target]
 
     print(f"[DEBUG] Running: {' '.join(cmd)}")
 
