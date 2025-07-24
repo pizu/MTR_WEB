@@ -3,9 +3,9 @@
 # General settings for MTR monitor script
 
 interval_seconds: 60
-log_directory: logs/
-rrd_directory: data/
-graph_output_directory: html/graphs/
+log_directory: /opt/scripts/MTR_WEB/logs/
+rrd_directory: /opt/scripts/MTR_WEB/data/
+graph_output_directory: /opt/scripts/MTR_WEB/html/graphs/
 retention_days: 30
 max_hops: 30
 log_lines_to_show: 30
