@@ -97,8 +97,14 @@ def main():
     print(f"[{datetime.now()}] Starting MTR for {args.target}")
     while True:
         result = run_mtr(args.target, source_ip)
-        if result and "report" in result:
-            update_rrd(rrd_path, result["report"], args.target)
+        if result:
+            print(f"[DEBUG] MTR JSON result = {json.dumps(result, indent=2)}")
+            if isinstance(result["report"], dict) and "hubs" in result["report"]:
+                update_rrd(rrd_path, result["report"]["hubs"], args.target)
+            elif isinstance(result["report"], list):
+                update_rrd(rrd_path, result["report"], args.target)
+            else:
+                print(f"[ERROR] Unexpected structure in result['report']")
         time.sleep(interval)
 
 if __name__ == "__main__":
