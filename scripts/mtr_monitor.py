@@ -1,7 +1,7 @@
 # mtr_monitor.py
 #
 # Monitors a single IP using mtr --json, updates RRD, and logs changes.
-# Patched with safe_float(), RRD debug logging, structured JSON parsing, and per-IP logs.
+# Patched with safe_float(), RRD debug logging, JSON key normalization, and per-IP logs.
 
 import subprocess
 import json
@@ -72,10 +72,10 @@ def update_rrd(rrd_path, hops, ip):
         except IndexError:
             h = {}
         values += [
-            safe_float(h.get('avg')),
-            safe_float(h.get('last')),
-            safe_float(h.get('best')),
-            safe_float(h.get('loss'))
+            safe_float(h.get('Avg')),
+            safe_float(h.get('Last')),
+            safe_float(h.get('Best')),
+            safe_float(h.get('Loss%'))
         ]
     with open("rrd_debug.log", "a") as dbg:
         dbg.write(f"{datetime.now()} {ip} values: {values}\n")
@@ -110,14 +110,12 @@ def main():
         result = run_mtr(args.target, source_ip)
         if result:
             print(f"[DEBUG] MTR JSON result = {json.dumps(result, indent=2)}")
-            if isinstance(result["report"], dict) and "hubs" in result["report"]:
-                update_rrd(rrd_path, result["report"]["hubs"], args.target)
-                logger.info("Updated RRD with parsed JSON (hubs)")
-            elif isinstance(result["report"], list):
-                update_rrd(rrd_path, result["report"], args.target)
-                logger.info("Updated RRD with parsed JSON (flat list)")
+            hops = result.get("report", {}).get("hubs", [])
+            if hops:
+                update_rrd(rrd_path, hops, args.target)
+                logger.info(f"Updated RRD with {len(hops)} hops")
             else:
-                logger.warning("Unexpected JSON structure: 'report' has no 'hubs' or is not a list")
+                logger.warning("No valid hop data found in JSON")
         else:
             logger.warning("No result from mtr")
 
