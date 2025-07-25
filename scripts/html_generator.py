@@ -57,6 +57,16 @@ def generate_html(ip, description):
     else:
         logger.warning(f"No traceroute file found for {ip} at {trace_path}")
 
+    # Detect hop indices
+    hop_indices = []
+    for file in os.listdir(GRAPH_DIR):
+        match = re.match(rf"{re.escape(ip)}_hop(\d+)_avg_", file)
+        if match:
+            idx = int(match.group(1))
+            if idx not in hop_indices:
+                hop_indices.append(idx)
+    hop_indices.sort()
+
     try:
         with open(html_path, "w") as f:
             f.write("<html><head><meta charset='utf-8'>\n")
@@ -104,7 +114,6 @@ function filterLogs() {
             generated_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             refresh_note = f"Auto-refresh every {REFRESH_SECONDS}s" if REFRESH_SECONDS > 0 else "Auto-refresh disabled"
             f.write(f"<p><i>Generated: {generated_time} — {refresh_note}</i></p>")
-            
             logger.info(f"[{ip}] Generated HTML page at {generated_time} — {refresh_note}")
 
             if traceroute:
@@ -144,14 +153,18 @@ function filterLogs() {
                     f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
                 f.write("</select>")
                 f.write("<div class='graph-grid'>")
-                for i, label in enumerate(time_labels):
-                    img_filename = f"{ip}_{metric}_{label}.png"
-                    img_path = os.path.join(GRAPH_DIR, img_filename)
-                    if os.path.exists(img_path):
-                        display = "block" if i == 0 else "none"
-                        f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
-                        f.write(f"<img src='graphs/{img_filename}' alt='{metric} graph {label}' loading='lazy'>")
-                        f.write("</div>")
+
+                for hop_index in hop_indices:
+                    for i, label in enumerate(time_labels):
+                        filename = f"{ip}_hop{hop_index}_{metric}_{label}.png"
+                        full_path = os.path.join(GRAPH_DIR, filename)
+                        if os.path.exists(full_path):
+                            display = "block" if i == 0 else "none"
+                            f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
+                            f.write(f"<img src='graphs/{filename}' alt='{metric} hop{hop_index} {label}' loading='lazy'><br>")
+                            f.write(f"<small>Hop {hop_index}</small>")
+                            f.write("</div>")
+
                 f.write("</div></div></div>")
 
             f.write("<h3>Recent Logs</h3>")
