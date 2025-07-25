@@ -171,7 +171,6 @@ function filterLogs() {
                 f.write(f"<div class='graph-header'><h4>{metric.upper()} Summary</h4>")
                 f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
                 f.write(f"<div id='{section_id}' class=''>")
-                
                 f.write("<div class='graph-grid'>")
                 for i, label in enumerate(time_labels):
                     filename = f"{ip}_{metric}_{label}.png"
@@ -181,8 +180,51 @@ function filterLogs() {
                         f.write(f"<div style='display:{display}' class='graph-img-global-{ip}' data-range='{label}'>")
                         f.write(f"<img src='graphs/{filename}' alt='{metric} summary {label}' loading='lazy'>")
                         f.write("</div>")
-                        f.write("</div>")  # end graph-grid
-            f.write("</div></div>")
+                f.write("</div></div></div>")  # end graph-grid, div, section
+
+            # --- Per-Hop Graphs ---
+            f.write("<h4>Per-Hop Graphs</h4>")
+            for hop in hops:
+                section_id = f"{ip}-hop{hop}"
+                f.write(f"<div class='graph-section'>")
+                f.write(f"<div class='graph-header'><h4>Hop {hop}</h4>")
+                f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
+                f.write(f"<div id='{section_id}' class=''>")
+
+                # Dropdown for per-hop time range
+                f.write(f"<label>Time Range: </label>")
+                f.write(f"<select onchange=\"setHopTimeRange('{ip}', {hop}, this.value)\">")
+                for i, label in enumerate(time_labels):
+                    selected = "selected" if i == 0 else ""
+                    f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
+                f.write("</select>")
+
+                # Graphs per metric per time
+                for metric in ["avg", "last", "best", "loss"]:
+                    f.write(f"<div class='graph-grid'>")
+                    for i, label in enumerate(time_labels):
+                        filename = f"{ip}_hop{hop}_{metric}_{label}.png"
+                        full_path = os.path.join(GRAPH_DIR, filename)
+                        if os.path.exists(full_path):
+                            display = "block" if i == 0 else "none"
+                            f.write(f"<div style='display:{display}' class='hop-graph-{ip}-{hop}-{metric}' data-range='{label}'>")
+                            f.write(f"<img src='graphs/{filename}' alt='Hop {hop} {metric} {label}' loading='lazy'>")
+                            f.write("</div>")
+                    f.write("</div>")  # end graph-grid
+                f.write("</div></div>")  # end hop section
+
+            # JS to control hop graph switching
+            f.write("""
+<script>
+function setHopTimeRange(ip, hop, selected) {
+    ['avg','last','best','loss'].forEach(metric => {
+        document.querySelectorAll(`.hop-graph-${ip}-${hop}-${metric}`).forEach(el => {
+            el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
+        });
+    });
+}
+</script>
+""")
 
             f.write("<h3>Recent Logs</h3>")
             f.write("<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
