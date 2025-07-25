@@ -107,8 +107,9 @@ try:
                 try:
                     with open(log_path) as logf:
                         lines = [line.strip() for line in logf if "MTR RUN" in line]
-                        last_seen_line = lines[-1] if lines else ""
-                        last_seen = last_seen_line.split("]")[0].strip("[") if last_seen_line else "Never"
+                        if lines:
+                            last_seen_line = lines[-1]
+                            last_seen = last_seen_line.split("]")[0].strip("[")
                 except Exception as e:
                     logger.warning(f"Could not read log for {ip}: {e}")
 
@@ -126,6 +127,7 @@ try:
             else:
                 logger.debug(f"fping check disabled in settings for {ip}")
 
+            # Output row
             f.write("<tr>")
             f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
             f.write(f"<td>{description}</td>")
