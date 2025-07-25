@@ -60,30 +60,27 @@ def generate_html(ip, description):
         with open(html_path, "w") as f:
             f.write("<html><head><meta charset='utf-8'>")
             f.write(f"<title>{ip}</title>")
-            f.write("""
-<style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
-    h2 { margin-top: 0; }
-    table { border-collapse: collapse; }
-    th, td { padding: 5px 10px; border: 1px solid #ccc; }
-    .graph-section { margin-bottom: 25px; border: 1px solid #ddd; padding: 10px; background: #fff; }
-    .graph-header { display: flex; justify-content: space-between; align-items: center; }
-    .graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 10px; }
-    .hidden { display: none; }
-    .log-line { white-space: pre-wrap; }
+            f.write("""<style>
+body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
+h2 { margin-top: 0; }
+table { border-collapse: collapse; width: 100%; }
+th, td { padding: 5px 10px; border: 1px solid #ccc; }
+.graph-section { margin-bottom: 25px; border: 1px solid #ddd; padding: 10px; background: #fff; }
+.graph-header { display: flex; justify-content: space-between; align-items: center; }
+.graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 10px; }
+.hidden { display: none; }
+.log-line { white-space: pre-wrap; }
 </style>
 <script>
 function toggleSection(id) {
     const el = document.getElementById(id);
     el.classList.toggle('hidden');
 }
-
 function switchGraph(ip, metric, selected) {
     document.querySelectorAll(`.graph-img-${metric}-${ip}`).forEach(el => {
         el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
     });
 }
-
 function filterLogs() {
     const input = document.getElementById('logFilter').value.toLowerCase();
     const lines = document.getElementsByClassName('log-line');
@@ -91,8 +88,7 @@ function filterLogs() {
         line.style.display = line.innerText.toLowerCase().includes(input) ? '' : 'none';
     }
 }
-</script>
-""")
+</script>""")
             f.write("</head><body>")
 
             f.write(f"<h2>{ip}</h2>")
@@ -147,12 +143,13 @@ function filterLogs() {
                         f.write("</div>")
                 f.write("</div></div></div>")
 
-            # Logs (structured table only)
-            f.write(f"<h3>Recent Logs</h3>")
-            f.write(f"<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
-
-            f.write("<table class='log-table' style='width:100%; border-collapse: collapse; font-family: monospace; font-size: 13px;'>")
-            f.write("<thead><tr style='background-color:#333; color:white;'><th style='padding:5px;border:1px solid #ccc;'>Timestamp</th><th style='padding:5px;border:1px solid #ccc;'>Level</th><th style='padding:5px;border:1px solid #ccc;'>Message</th></tr></thead><tbody>")
+            # Logs - structured table
+            f.write("<h3>Recent Logs</h3>")
+            f.write("<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
+            f.write("<table class='log-table'><thead><tr style='background-color:#333; color:white;'>")
+            f.write("<th style='padding:5px;border:1px solid #ccc;'>Timestamp</th>")
+            f.write("<th style='padding:5px;border:1px solid #ccc;'>Level</th>")
+            f.write("<th style='padding:5px;border:1px solid #ccc;'>Message</th></tr></thead><tbody>")
 
             timestamp_pattern = re.compile(r"\[(.*?)\]\s*(.*)")
             for line in logs:
@@ -165,12 +162,15 @@ function filterLogs() {
                     timestamp = match.group(1).strip()
                     message = match.group(2).strip()
 
-                if "ERROR" in message:
-                    level = "ERROR"
-                elif "WARNING" in message:
+                lower_msg = message.lower()
+                if "loss" in lower_msg:
                     level = "WARNING"
-                elif "INFO" in message:
+                elif "hop path changed" in lower_msg:
                     level = "INFO"
+                elif "mtr run" in lower_msg:
+                    level = "INFO"
+                elif "error" in lower_msg:
+                    level = "ERROR"
 
                 row_color = {
                     "ERROR": "color: red;",
@@ -179,10 +179,11 @@ function filterLogs() {
                 }.get(level, "color: white;")
 
                 message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                f.write(f"<tr class='log-line'><td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td><td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td><td style='border:1px solid #ccc;padding:5px;'>{message}</td></tr>")
+                f.write(f"<tr class='log-line'><td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td>")
+                f.write(f"<td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td>")
+                f.write(f"<td style='border:1px solid #ccc;padding:5px;'>{message}</td></tr>")
 
             f.write("</tbody></table>")
-
             f.write("<hr><p><a href='index.html'>Back to index</a></p>")
             f.write("</body></html>")
         logger.info(f"Updated HTML page for {ip}")
