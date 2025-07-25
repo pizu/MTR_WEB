@@ -13,6 +13,7 @@ GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
 HTML_DIR = "html"
 TRACEROUTE_DIR = "traceroute"
 LOG_LINES_DISPLAY = settings.get("log_lines_display", 50)
+TIME_RANGES = settings.get("graph_time_ranges", [{"label": "1h", "seconds": 3600}])
 
 # Load targets
 try:
@@ -90,7 +91,7 @@ def generate_html(ip, description):
                 f.write(f"<p><b>{description}</b></p>")
             f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
 
-            # Traceroute table (correctly parsed format)
+            # Traceroute
             if traceroute:
                 f.write("<h3>Traceroute</h3>")
                 f.write("<table><tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
@@ -100,7 +101,6 @@ def generate_html(ip, description):
                         hop = parts[0]
                         ipaddr = parts[1]
                         latency = parts[2] + " " + parts[3] if len(parts) > 3 else parts[2]
-
                         if ipaddr == "???":
                             ipaddr = "Request timed out"
                             latency = "-"
@@ -116,31 +116,30 @@ def generate_html(ip, description):
 
             # Graphs
             f.write("<h3>Graphs</h3>")
-            time_ranges = settings.get("graph_time_ranges", ["1h"])
+            time_labels = [tr["label"] for tr in TIME_RANGES]
             for metric in ["avg", "last", "best", "loss"]:
                 section_id = f"section-{ip}-{metric}"
                 f.write(f"<div class='graph-section'>")
                 f.write(f"<div class='graph-header'><h4>{metric.upper()} Graphs</h4>")
                 f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
                 f.write(f"<div id='{section_id}' class=''>")
-                # Range selector
                 f.write(f"<label>Time Range: </label>")
                 f.write(f"<select onchange=\"switchGraph('{ip}', '{metric}', this.value)\">")
-                for i, rng in enumerate(time_ranges):
+                for i, label in enumerate(time_labels):
                     selected = "selected" if i == 0 else ""
-                    f.write(f"<option value='{rng}' {selected}>{rng.upper()}</option>")
+                    f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
                 f.write("</select>")
 
                 f.write("<div class='graph-grid'>")
                 found_any = False
-                for rng in time_ranges:
-                    img_filename = f"{ip}_{metric}_{rng}.png"
+                for i, label in enumerate(time_labels):
+                    img_filename = f"{ip}_{metric}_{label}.png"
                     img_path = os.path.join(GRAPH_DIR, img_filename)
                     if os.path.exists(img_path):
                         found_any = True
-                        display = "block" if rng == time_ranges[0] else "none"
-                        f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{rng}'>")
-                        f.write(f"<img src='graphs/{img_filename}' alt='{metric} graph {rng}' loading='lazy'>")
+                        display = "block" if i == 0 else "none"
+                        f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
+                        f.write(f"<img src='graphs/{img_filename}' alt='{metric} graph {label}' loading='lazy'>")
                         f.write("</div>")
                     else:
                         logger.debug(f"Graph not found: {img_path}")
