@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# html_builder.py
 import os
 import re
 from datetime import datetime
@@ -87,7 +87,7 @@ function filterLogs() {
                     if hop_ip == "???":
                         hop_ip = "Request timed out"
                         latency = "-"
-                        f.write(f"<tr><td>{idx}</td><td>{hop_ip}</td><td>{latency}</td></tr>")
+                    f.write(f"<tr><td>{idx}</td><td>{hop_ip}</td><td>{latency}</td></tr>")
                 f.write("</table>")
 
             f.write("<h3>Graphs</h3>")
@@ -192,9 +192,8 @@ function setHopTimeRange(ip, hop, selected) {
                             f.write(f"<div style='display:{display}' class='hop-graph-{ip}-{hop}' data-range='{label['label']}'>")
                             f.write(f"<img src='graphs/{png}' alt='Hop {hop} {metric} {label['label']}' loading='lazy'>")
                             f.write("</div>")
-                    f.write("</div>")  # graph-grid
-                f.write("</div>")  # graph-section
-
+                    f.write("</div>")
+                f.write("</div>")
             f.write("</body></html>")
         logger.info(f"[{ip}] Per-hop HTML generated: {html_path}")
     except Exception as e:
