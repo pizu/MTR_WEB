@@ -3,15 +3,17 @@ import os
 import yaml
 import rrdtool
 import re
+import math
 from utils import load_settings, setup_logger
 
+# Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("graph_generator", log_directory, "graph_generator.log")
 
 RRD_DIR = settings.get("rrd_directory", "data")
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
-TRACEROUTE_DIR = "traceroute"
+TRACEROUTE_DIR = settings.get("traceroute_directory", "traceroute")
 MAX_HOPS = settings.get("max_hops", 30)
 GRAPH_WIDTH = settings.get("graph_width", 800)
 GRAPH_HEIGHT = settings.get("graph_height", 200)
@@ -19,24 +21,18 @@ TIME_RANGES = settings.get("graph_time_ranges", ["1h", "6h", "12h", "24h", "1w"]
 
 os.makedirs(GRAPH_DIR, exist_ok=True)
 
-# Sanitize label to avoid RRDTool errors
+# Sanitize label for RRDTool
 def sanitize_label(label):
     return re.sub(r'[:\\\'"]', '-', label)
 
-# Determine color based on RTT
-def get_rtt_color(latency_ms):
-    try:
-        rtt = float(latency_ms.replace("ms", "").strip())
-        if rtt > 150:
-            return "ff0000"  # Red
-        elif rtt > 50:
-            return "ffa500"  # Orange
-        else:
-            return "00cc00"  # Green
-    except:
-        return "00cc00"  # Default to green on parse failure
+# Assign distinct colors per hop using sine waves
+def get_color_by_hop(hop_index):
+    r = int((1 + math.sin(hop_index * 0.3)) * 127)
+    g = int((1 + math.sin(hop_index * 0.3 + 2)) * 127)
+    b = int((1 + math.sin(hop_index * 0.3 + 4)) * 127)
+    return f"{r:02x}{g:02x}{b:02x}"
 
-# Load traceroute hops with RTT info
+# Load traceroute hop labels and latencies
 def get_labels_and_rtt(ip):
     path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     if not os.path.exists(path):
@@ -49,17 +45,16 @@ def get_labels_and_rtt(ip):
             if not line:
                 continue
             parts = line.split(maxsplit=2)
-            if len(parts) >= 3:
-                hop_num, hop_ip, latency = parts[0], parts[1], parts[2]
-                hops.append((int(hop_num), f"Hop {hop_num} - {hop_ip}", latency))
-            elif len(parts) == 2:
-                hop_num, hop_ip = parts[0], parts[1]
-                hops.append((int(hop_num), f"Hop {hop_num} - {hop_ip}", "0 ms"))
-            else:
-                hops.append((len(hops), f"Hop {len(hops)} - unknown", "0 ms"))
+            if len(parts) >= 2:
+                hop_num = int(parts[0])
+                hop_ip = parts[1]
+                hops.append((hop_num, f"Hop {hop_num} - {hop_ip}"))
+            elif len(parts) == 1:
+                hop_num = int(parts[0])
+                hops.append((hop_num, f"Hop {hop_num} - unknown"))
     return hops
 
-# Clean old graphs
+# Remove existing graphs for IP
 def clean_old_graphs(ip):
     for fname in os.listdir(GRAPH_DIR):
         if fname.startswith(f"{ip}_") and fname.endswith(".png"):
@@ -67,9 +62,9 @@ def clean_old_graphs(ip):
                 os.remove(os.path.join(GRAPH_DIR, fname))
                 logger.info(f"[CLEANED] {fname}")
             except Exception as e:
-                logger.warning(f"[SKIP CLEANUP] Could not remove {fname}: {e}")
+                logger.warning(f"[SKIP CLEANUP] {fname}: {e}")
 
-# Generate graph
+# Generate RRD graph for one metric and time range
 def generate_graph(ip, metric, timerange):
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     png_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}_{timerange}.png")
@@ -83,18 +78,17 @@ def generate_graph(ip, metric, timerange):
         logger.warning(f"[SKIP] No traceroute data for {ip}")
         return
 
-    # Limit to max_hops
+    # Filter to max_hops
     hops = sorted(hops, key=lambda h: h[0])
     hops = [h for h in hops if h[0] <= MAX_HOPS]
 
     defs = []
     lines = []
 
-    for hop in hops:
-        hop_index, raw_label, latency = hop
+    for hop_index, raw_label in hops:
         ds_name = f"hop{hop_index}_{metric}"
         safe_label = sanitize_label(raw_label)
-        color = get_rtt_color(latency)
+        color = get_color_by_hop(hop_index)
         defs.append(f"DEF:{ds_name}={rrd_path}:{ds_name}:AVERAGE")
         lines.append(f"LINE1:{ds_name}#{color}:{safe_label}")
 
@@ -113,7 +107,7 @@ def generate_graph(ip, metric, timerange):
     except rrdtool.OperationalError as e:
         logger.error(f"[ERROR] {ip} - {metric} ({timerange}): {e}")
 
-# Main generation loop
+# Main processing loop
 with open("mtr_targets.yaml") as f:
     targets = yaml.safe_load(f)["targets"]
 
