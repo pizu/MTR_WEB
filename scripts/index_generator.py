@@ -13,6 +13,7 @@ logger = setup_logger("index_generator", log_directory, "index_generator.log")
 LOG_DIR = settings.get("log_directory", "logs")
 HTML_DIR = "html"
 ENABLE_FPING = settings.get("enable_fping_check", True)
+REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
 
 # Load targets from YAML
 try:
@@ -30,7 +31,14 @@ try:
         f.write("""<html>
 <head>
     <meta charset='utf-8'>
-    <title>MTR Monitoring</title>
+""")
+        if REFRESH_SECONDS > 0:
+            f.write(f"    <meta http-equiv='refresh' content='{REFRESH_SECONDS}'>\n")
+            logger.info(f"Auto-refresh enabled: every {REFRESH_SECONDS} seconds")
+        else:
+            logger.info("Auto-refresh disabled")
+
+        f.write("""    <title>MTR Monitoring</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f8f9fa; }
         h2 { color: #333; }
@@ -78,8 +86,6 @@ try:
                 rows[i].style.display = row.includes(input) ? "" : "none";
             }
         }
-
-        setTimeout(() => location.reload(), 60000);
     </script>
 </head>
 <body>
@@ -137,8 +143,9 @@ try:
 
             logger.info(f"Processed {ip} — Status: {status}, Last Seen: {last_seen}")
 
+        refresh_note = f"Auto-refresh every {REFRESH_SECONDS}s" if REFRESH_SECONDS > 0 else "Auto-refresh disabled"
         f.write(f"""</table>
-<div class='footer'>Generated at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} — Auto-refresh every 60s</div>
+<div class='footer'>Generated at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} — {refresh_note}</div>
 </body>
 </html>""")
 
