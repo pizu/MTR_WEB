@@ -159,12 +159,19 @@ body { font-family: Arial; margin: 20px; background: #f4f4f4; }
 .graph-section { margin-bottom: 25px; border: 1px solid #ccc; padding: 10px; background: #fff; }
 .graph-header { display: flex; justify-content: space-between; align-items: center; }
 .graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 10px; }
+.hidden { display: none; }
 </style>
 <script>
 function setHopTimeRange(ip, hop, selected) {
     const safeIp = ip.replaceAll('.', '_');
     document.querySelectorAll(`.hop-graph-${safeIp}-${hop}`).forEach(el => {
         el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
+    });
+}
+function toggleHopMetrics(ip, hop) {
+    const safeIp = ip.replaceAll('.', '_');
+    document.querySelectorAll(`.hop-metric-${safeIp}-${hop}`).forEach(el => {
+        el.classList.toggle('hidden');
     });
 }
 </script>
@@ -181,7 +188,8 @@ function setHopTimeRange(ip, hop, selected) {
                 return
 
             for hop in hops:
-                f.write(f"<div class='graph-section'><div class='graph-header'><h3>Hop {hop}</h3></div>")
+                f.write(f"<div class='graph-section'><div class='graph-header'><h3>Hop {hop}</h3>")
+                f.write(f"<button onclick=\"toggleHopMetrics('{ip}', {hop})\">Toggle Metrics</button></div>")
                 f.write(f"<label>Time Range: </label><select onchange=\"setHopTimeRange('{ip}', {hop}, this.value)\">")
                 for i, label in enumerate(TIME_RANGES):
                     selected = "selected" if i == 0 else ""
@@ -189,7 +197,7 @@ function setHopTimeRange(ip, hop, selected) {
                 f.write("</select>")
 
                 for metric in ["avg", "last", "best", "loss"]:
-                    f.write("<div class='graph-grid'>")
+                    f.write(f"<div class='graph-grid hop-metric-{safe_ip}-{hop}'>")
                     for i, label in enumerate(TIME_RANGES):
                         png = f"{ip}_hop{hop}_{metric}_{label['label']}.png"
                         if os.path.exists(os.path.join(GRAPH_DIR, png)):
@@ -197,8 +205,9 @@ function setHopTimeRange(ip, hop, selected) {
                             f.write(f"<div style='display:{display}' class='hop-graph-{safe_ip}-{hop}' data-range='{label['label']}'>")
                             f.write(f"<img src='graphs/{png}' alt='Hop {hop} {metric} {label['label']}' loading='lazy'>")
                             f.write("</div>")
-                    f.write("</div>")
-                f.write("</div>")
+                    f.write("</div>")  # graph-grid
+                f.write("</div>")  # graph-section
+
             f.write("</body></html>")
         logger.info(f"[{ip}] Per-hop HTML generated: {html_path}")
     except Exception as e:
