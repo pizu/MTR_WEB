@@ -147,8 +147,6 @@ for target in targets:
                     perhop_png = f"{ip}_hop{hop_index}_{metric}_{label}.png"
                     png_path = os.path.join(GRAPH_DIR, perhop_png)
 
-                    if not os.path.exists(rrd_path):
-                        continue
 
                     safe_label = sanitize_label(raw_label)
                     color = get_color_by_hop(hop_index)
