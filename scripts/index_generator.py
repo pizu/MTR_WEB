@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import yaml
+import subprocess
 from datetime import datetime
 
 # Load settings
@@ -98,12 +99,12 @@ with open(index_path, "w") as f:
                 last_seen_line = lines[-1] if lines else ""
                 last_seen = last_seen_line.split("]")[0].strip("[") if last_seen_line else "Never"
 
-            with open(log_path) as logf:
-                recent = logf.read()
-                if "No data returned" in recent or "Loss at hop" not in recent:
-                    status = "Unreachable"
-                else:
-                    status = "Reachable"
+        # Use fping to verify reachability
+        try:
+            subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            status = "Reachable"
+        except subprocess.CalledProcessError:
+            status = "Unreachable"
 
         f.write("<tr>")
         f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
@@ -117,4 +118,4 @@ with open(index_path, "w") as f:
 </body>
 </html>""")
 
-print("[UPDATED] index.html with proper status detection")
+print("[UPDATED] index.html with fping-based status")
