@@ -5,6 +5,7 @@ import subprocess
 from datetime import datetime
 from utils import load_settings, setup_logger
 
+# Load settings and initialize logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("index_generator", log_directory, "index_generator.log")
@@ -12,15 +13,20 @@ logger = setup_logger("index_generator", log_directory, "index_generator.log")
 LOG_DIR = settings.get("log_directory", "logs")
 HTML_DIR = "html"
 
-# Load targets
-with open("mtr_targets.yaml") as f:
-    targets = yaml.safe_load(f)["targets"]
-    print("Loaded targets:", targets)
+# Load targets from YAML
+try:
+    with open("mtr_targets.yaml") as f:
+        targets = yaml.safe_load(f).get("targets", [])
+        logger.info(f"Loaded {len(targets)} targets from mtr_targets.yaml")
+except Exception as e:
+    logger.error(f"Failed to load targets from mtr_targets.yaml: {e}")
+    targets = []
 
 # Generate index.html
 index_path = os.path.join(HTML_DIR, "index.html")
-with open(index_path, "w") as f:
-    f.write("""<html>
+try:
+    with open(index_path, "w") as f:
+        f.write("""<html>
 <head>
     <meta charset='utf-8'>
     <title>MTR Monitoring</title>
@@ -87,37 +93,45 @@ with open(index_path, "w") as f:
 </tr>
 """)
 
-    for t in targets:
-        ip = t["ip"]
-        description = t.get("description", "")
-        log_path = os.path.join(LOG_DIR, f"{ip}.log")
+        for t in targets:
+            ip = t.get("ip")
+            description = t.get("description", "")
+            log_path = os.path.join(LOG_DIR, f"{ip}.log")
 
-        status = "N/A"
-        last_seen = "Never"
+            status = "N/A"
+            last_seen = "Never"
 
-        if os.path.exists(log_path):
-            with open(log_path) as logf:
-                lines = [line.strip() for line in logf if "MTR RUN" in line]
-                last_seen_line = lines[-1] if lines else ""
-                last_seen = last_seen_line.split("]")[0].strip("[") if last_seen_line else "Never"
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path) as logf:
+                        lines = [line.strip() for line in logf if "MTR RUN" in line]
+                        last_seen_line = lines[-1] if lines else ""
+                        last_seen = last_seen_line.split("]")[0].strip("[") if last_seen_line else "Never"
+                except Exception as e:
+                    logger.warning(f"Could not read log for {ip}: {e}")
 
-        # Use fping to verify reachability
-        try:
-            subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            status = "Reachable"
-        except subprocess.CalledProcessError:
-            status = "Unreachable"
+            # Check IP reachability using fping
+            try:
+                subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                status = "Reachable"
+            except subprocess.CalledProcessError:
+                status = "Unreachable"
 
-        f.write("<tr>")
-        f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
-        f.write(f"<td>{description}</td>")
-        f.write(f"<td>{status}</td>")
-        f.write(f"<td>{last_seen}</td>")
-        f.write("</tr>\n")
+            f.write("<tr>")
+            f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
+            f.write(f"<td>{description}</td>")
+            f.write(f"<td>{status}</td>")
+            f.write(f"<td>{last_seen}</td>")
+            f.write("</tr>\n")
 
-    f.write(f"""</table>
+            logger.info(f"Processed {ip} — Status: {status}, Last Seen: {last_seen}")
+
+        f.write(f"""</table>
 <div class='footer'>Generated at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} — Auto-refresh every 60s</div>
 </body>
 </html>""")
 
-print("[UPDATED] index.html with fping-based status")
+    logger.info(f"[UPDATED] index.html with {len(targets)} targets")
+
+except Exception as e:
+    logger.error(f"Failed to generate index.html: {e}")
