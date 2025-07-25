@@ -55,7 +55,6 @@ def generate_html(ip, description):
     else:
         logger.warning(f"No traceroute file found for {ip} at {trace_path}")
 
-    # Build HTML
     try:
         with open(html_path, "w") as f:
             f.write("<html><head><meta charset='utf-8'>")
@@ -74,26 +73,26 @@ def generate_html(ip, description):
     .log-line { white-space: pre-wrap; }
 </style>
 <script>
-    function toggleSection(id) {
-        const el = document.getElementById(id);
-        el.classList.toggle('hidden');
-    }
+function toggleSection(id) {
+    const el = document.getElementById(id);
+    el.classList.toggle('hidden');
+}
 
-    function switchGraph(ip, metric, selected) {
-        document.querySelectorAll(`.graph-img-${metric}-${ip}`).forEach(el => {
-            el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
-        });
-    }
+function switchGraph(ip, metric, selected) {
+    document.querySelectorAll(`.graph-img-${metric}-${ip}`).forEach(el => {
+        el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
+    });
+}
 
-    function filterLogs() {
-        const input = document.getElementById('logFilter').value.toLowerCase();
-        const lines = document.getElementsByClassName('log-line');
-        for (const line of lines) {
-            line.style.display = line.innerText.toLowerCase().includes(input) ? '' : 'none';
-        }
+function filterLogs() {
+    const input = document.getElementById('logFilter').value.toLowerCase();
+    const lines = document.getElementsByClassName('log-line');
+    for (const line of lines) {
+        line.style.display = line.innerText.toLowerCase().includes(input) ? '' : 'none';
     }
+}
 </script>
-"")
+""")
             f.write("</head><body>")
 
             f.write(f"<h2>{ip}</h2>")
@@ -129,10 +128,10 @@ def generate_html(ip, description):
                 section_id = f"section-{ip}-{metric}"
                 f.write(f"<div class='graph-section'>")
                 f.write(f"<div class='graph-header'><h4>{metric.upper()} Graphs</h4>")
-                f.write(f"<button onclick="toggleSection('{section_id}')">Toggle</button></div>")
+                f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
                 f.write(f"<div id='{section_id}' class=''>")
                 f.write(f"<label>Time Range: </label>")
-                f.write(f"<select onchange="switchGraph('{ip}', '{metric}', this.value)">")
+                f.write(f"<select onchange=\"switchGraph('{ip}', '{metric}', this.value)\">")
                 for i, label in enumerate(time_labels):
                     selected = "selected" if i == 0 else ""
                     f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
@@ -148,14 +147,12 @@ def generate_html(ip, description):
                         f.write("</div>")
                 f.write("</div></div></div>")
 
-            # Logs
-            f.write("""
-<h3>Recent Logs</h3>
-<input type="text" id="logFilter" placeholder="Filter logs..." style="width:100%;margin-bottom:10px;padding:5px;" onkeyup="filterLogs()">
-<details open>
-<summary style="cursor: pointer; font-weight: bold;">Raw Log View</summary>
-<div class="log-box">
-""")
+            # Logs (raw and table)
+            f.write(f"<h3>Recent Logs</h3>")
+            f.write(f"<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
+
+            f.write("<details open><summary style='cursor: pointer; font-weight: bold;'>Raw Log View</summary>")
+            f.write("<div class='log-box'>")
             if logs:
                 for line in logs:
                     css_style = ""
@@ -172,19 +169,10 @@ def generate_html(ip, description):
             else:
                 f.write("<div class='log-line'>No logs available.</div>")
             f.write("</div></details>")
-            f.write("""
-<details>
-<summary style="cursor: pointer; font-weight: bold;">Structured Table View</summary>
-<table class="log-table" style="width:100%; border-collapse: collapse; font-family: monospace; font-size: 13px;">
-  <thead>
-    <tr style="background-color:#333; color:white;">
-      <th style="padding: 5px; border: 1px solid #ccc;">Timestamp</th>
-      <th style="padding: 5px; border: 1px solid #ccc;">Level</th>
-      <th style="padding: 5px; border: 1px solid #ccc;">Message</th>
-    </tr>
-  </thead>
-  <tbody>
-""")
+
+            f.write("<details><summary style='cursor: pointer; font-weight: bold;'>Structured Table View</summary>")
+            f.write("<table class='log-table' style='width:100%; border-collapse: collapse; font-family: monospace; font-size: 13px;'>")
+            f.write("<thead><tr style='background-color:#333; color:white;'><th style='padding:5px;border:1px solid #ccc;'>Timestamp</th><th style='padding:5px;border:1px solid #ccc;'>Level</th><th style='padding:5px;border:1px solid #ccc;'>Message</th></tr></thead><tbody>")
             if logs:
                 for line in logs:
                     try:
@@ -199,13 +187,9 @@ def generate_html(ip, description):
                         }.get(level, "color: white;")
                         timestamp = timestamp.strip()
                         message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                        f.write(f"<tr class='log-line'>")
-                        f.write(f"<td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td>")
-                        f.write(f"<td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td>")
-                        f.write(f"<td style='border:1px solid #ccc;padding:5px;'>{message}</td>")
-                        f.write("</tr>\n")
+                        f.write(f"<tr class='log-line'><td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td><td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td><td style='border:1px solid #ccc;padding:5px;'>{message}</td></tr>")
                     except Exception:
-                        f.write(f"<tr class='log-line'><td colspan='3' style='border:1px solid #ccc;padding:5px;'>{line}</td></tr>\n")
+                        f.write(f"<tr class='log-line'><td colspan='3' style='border:1px solid #ccc;padding:5px;'>{line}</td></tr>")
             else:
                 f.write("<tr><td colspan='3'>No logs available.</td></tr>")
             f.write("</tbody></table></details>")
