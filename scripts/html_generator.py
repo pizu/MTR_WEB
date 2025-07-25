@@ -140,10 +140,12 @@ function filterLogs() {
 
             f.write("<h3>Graphs</h3>")
             time_labels = [tr["label"] for tr in TIME_RANGES]
+            # --- Summary Graphs (all hops in one chart) ---
+            f.write("<h4>Summary (All Hops)</h4>")
             for metric in ["avg", "last", "best", "loss"]:
-                section_id = f"section-{ip}-{metric}"
+                section_id = f"summary-{ip}-{metric}"
                 f.write(f"<div class='graph-section'>")
-                f.write(f"<div class='graph-header'><h4>{metric.upper()} Graphs</h4>")
+                f.write(f"<div class='graph-header'><h4>{metric.upper()} Summary</h4>")
                 f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
                 f.write(f"<div id='{section_id}' class=''>")
                 f.write(f"<label>Time Range: </label>")
@@ -151,8 +153,17 @@ function filterLogs() {
                 for i, label in enumerate(time_labels):
                     selected = "selected" if i == 0 else ""
                     f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
-                f.write("</select>")
-                f.write("<div class='graph-grid'>")
+                    f.write("</select>")
+                    f.write("<div class='graph-grid'>")
+                for i, label in enumerate(time_labels):
+                    filename = f"{ip}_{metric}_{label}.png"
+                    full_path = os.path.join(GRAPH_DIR, filename)
+                    if os.path.exists(full_path):
+                        display = "block" if i == 0 else "none"
+                        f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
+                        f.write(f"<img src='graphs/{filename}' alt='{metric} summary {label}' loading='lazy'>")
+                        f.write("</div>")
+                        f.write("</div></div></div>")
 
                 for hop_index in hop_indices:
                     for i, label in enumerate(time_labels):
