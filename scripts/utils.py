@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 utils.py - Shared utility functions for the MTR monitoring system.
 
