@@ -43,9 +43,9 @@ def get_labels(ip):
             if len(parts) >= 2:
                 hop_num = parts[0]
                 host = parts[1]
-                hops.append(f"{hop_num}: {host}")
+                hops.append(f"Hop {hop_num} - {host}")
             else:
-                hops.append(f"{len(hops)+1}: (unknown)")
+                hops.append(f"Hop {len(hops)+1} - unknown")
     return hops
 
 # Generate graph for a single IP/metric/range
@@ -63,7 +63,7 @@ def generate_graph(ip, metric, timerange):
 
     for i in range(1, MAX_HOPS + 1):
         ds_name = f"hop{i}_{metric}"
-        raw_label = traceroute_labels[i - 1] if i - 1 < len(traceroute_labels) else f"Hop{i} (unknown)"
+        raw_label = traceroute_labels[i - 1] if i - 1 < len(traceroute_labels) else f"Hop {i} - unknown"
         safe_label = sanitize_label(raw_label)
         color = f"{(i * 73 % 256):02x}{(i * 137 % 256):02x}{(255 - i * 47 % 256):02x}"
         defs.append(f"DEF:{ds_name}={rrd_path}:{ds_name}:AVERAGE")
