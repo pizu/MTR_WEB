@@ -116,6 +116,8 @@ for target in targets:
     if not ip:
         continue
 
+    rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
+
     hops = get_labels(ip)
     if not hops:
         logger.warning(f"[SKIP] No valid traceroute data for {ip}")
