@@ -125,6 +125,7 @@ def monitor_target(ip, source_ip=None):
     os.makedirs(rrd_dir, exist_ok=True)
     rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
     init_rrd(rrd_path)
+    
     debug_rrd_log = os.path.join(log_directory, "rrd_debug.log")
 
     prev_hops = []
