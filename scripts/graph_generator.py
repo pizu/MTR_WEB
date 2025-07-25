@@ -1,73 +1,118 @@
 #!/usr/bin/env python3
 import os
 import yaml
-import rrdtool
+from datetime import datetime
 from utils import load_settings, setup_logger
 
-# Load settings and logger
+# Load config
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("graph_generator", log_directory, "graph_generator.log")
+logger = setup_logger("html_generator", log_directory, "html_generator.log")
 
-# Configuration paths
-RRD_DIR = settings.get("rrd_directory", "data")
+LOG_DIR = log_directory
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
+HTML_DIR = "html"
 TRACEROUTE_DIR = "traceroute"
-MAX_HOPS = settings.get("max_hops", 30)
-GRAPH_WIDTH = settings.get("graph_width", 800)
-GRAPH_HEIGHT = settings.get("graph_height", 200)
+LOG_LINES_DISPLAY = settings.get("log_lines_display", 50)
 
-os.makedirs(GRAPH_DIR, exist_ok=True)
-
-# Load targets
+# Load target list
 with open("mtr_targets.yaml") as f:
     targets = yaml.safe_load(f)["targets"]
 
-# Helper to load hop labels from traceroute file
-def get_labels(ip):
+# Helper to load and parse traceroute
+def load_traceroute(ip):
     path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
-    if os.path.exists(path):
-        with open(path) as f:
-            return [line.strip() for line in f if line.strip()]
-    return []
+    if not os.path.exists(path):
+        return []
 
-# Generate a single graph for one metric
-def generate_graph(ip, metric):
-    rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
-    png_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}.png")
+    hops = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                parts = line.split()
+                hop_str = " ".join(parts)
+                hops.append(hop_str)
+    return hops
 
-    if not os.path.exists(rrd_path):
-        logger.warning(f"[SKIP] No RRD file found for {ip}")
-        return
+# Helper to load logs
+def load_logs(ip):
+    path = os.path.join(LOG_DIR, f"{ip}.log")
+    if not os.path.exists(path):
+        return ["No log file found."]
+    with open(path) as f:
+        lines = f.readlines()
+        if not lines:
+            return ["No log entries."]
+        return lines[-LOG_LINES_DISPLAY:][::-1]  # Newest first
 
-    traceroute = get_labels(ip)
-    defs = []
-    lines = []
+# Generate HTML per target
+def generate_html(ip, description):
+    traceroute = load_traceroute(ip)
+    logs = load_logs(ip)
+    html_path = os.path.join(HTML_DIR, f"{ip}.html")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    for i in range(1, MAX_HOPS + 1):
-        ds_name = f"hop{i}_{metric}"
-        label = traceroute[i - 1] if i - 1 < len(traceroute) else f"Hop{i} (unknown)"
-        color = f"{(i * 47 % 256):02x}{(255 - i * 29 % 256):02x}{(i * 71 % 256):02x}"
-        defs.append(f"DEF:{ds_name}={rrd_path}:{ds_name}:AVERAGE")
-        lines.append(f"LINE1:{ds_name}#{color}:{label}")
+    with open(html_path, "w") as f:
+        f.write(f"""<html>
+<head>
+    <meta charset='utf-8'>
+    <title>{ip} Monitoring</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; background-color: #f9f9f9; margin: 20px; }}
+        h2 {{ color: #2c3e50; }}
+        .section {{ margin-bottom: 30px; }}
+        pre {{ background-color: #f0f0f0; padding: 10px; overflow-x: auto; border: 1px solid #ccc; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+        th {{ background-color: #eee; }}
+    </style>
+</head>
+<body>
+    <h2>{ip}</h2>
+    <p><strong>Description:</strong> {description or 'N/A'}</p>
+    <p><strong>Last updated:</strong> {timestamp}</p>
 
-    cmd = defs + lines + [
-        f"--title={ip} - {metric.upper()} per hop",
-        f"--width={GRAPH_WIDTH}",
-        f"--height={GRAPH_HEIGHT}",
-        "--slope-mode",
-        "--end", "now",
-        "--start", "-1h"
-    ]
+    <div class="section">
+        <h3>Traceroute (Hop Path)</h3>
+        <table>
+            <tr><th>Hop</th><th>Details</th></tr>
+""")
+        for i, hop in enumerate(traceroute, 1):
+            f.write(f"<tr><td>{i}</td><td>{hop}</td></tr>\n")
+        if not traceroute:
+            f.write("<tr><td colspan='2'>No traceroute data found.</td></tr>\n")
 
-    try:
-        rrdtool.graph(png_path, *cmd)
-        logger.info(f"[GRAPHED] {png_path}")
-    except rrdtool.OperationalError as e:
-        logger.error(f"[ERROR] Failed to graph {ip} ({metric}): {e}")
+        f.write(f"""</table>
+        <p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>View raw traceroute file</a></p>
+    </div>
 
-# Main loop to generate all graphs
+    <div class="section">
+        <h3>Graphs</h3>
+""")
+        for metric in ["avg", "last", "best", "loss"]:
+            img_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}.png")
+            if os.path.exists(img_path):
+                f.write(f"<h4>{metric.upper()} Graph</h4><img src='../{img_path}' alt='{metric} graph'><br><br>\n")
+            else:
+                f.write(f"<p>{metric.upper()} graph not found.</p>\n")
+
+        f.write("""</div>
+    <div class="section">
+        <h3>Recent Log Events</h3>
+        <pre>
+""")
+        for line in logs:
+            f.write(line)
+        f.write("""</pre>
+    </div>
+</body>
+</html>""")
+
+    logger.info(f"[GENERATED] HTML for {ip} at {html_path}")
+
+# Generate HTML for all targets
 for target in targets:
-    ip = target["ip"]
-    for metric in ["avg", "last", "best", "loss"]:
-        generate_graph(ip, metric)
+    ip = target.get("ip")
+    description = target.get("description", "")
+    generate_html(ip, description)
