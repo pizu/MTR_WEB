@@ -2,10 +2,11 @@
 import os
 import yaml
 from datetime import datetime
+from utils import load_settings, setup_logger
 
-# Load settings
-with open("mtr_script_settings.yaml") as f:
-    settings = yaml.safe_load(f)
+settings = load_settings()
+log_directory = settings.get("log_directory", "/tmp")
+logger = setup_logger("html_generator", log_directory, "html_generator.log")
 
 LOG_DIR = settings.get("log_directory", "logs")
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
