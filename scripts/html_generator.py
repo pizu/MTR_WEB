@@ -91,24 +91,31 @@ def generate_html(ip, description):
             f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
 
             # Traceroute table (corrected format)
+            # Traceroute table for structured format
             if traceroute:
                 f.write("<h3>Traceroute</h3>")
                 f.write("<table><tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
-                for idx, line in enumerate(traceroute, 1):
-                    hop_raw = line.strip()
-                    if not hop_raw:
-                        continue
-                    if hop_raw == "???":
-                        address = "Request timed out"
-                        detail = "-"
+                for line in traceroute:
+                    parts = line.strip().split()
+                    if len(parts) >= 3:
+                        hop = parts[0]
+                        ip = parts[1]
+                        latency = parts[2] + " " + parts[3] if len(parts) > 3 else parts[2]
+                        
+                        if ip == "???":
+                            ip = "Request timed out"
+                            latency = "-"
+                        else:
+                            hop = "?"
+                            ip = line.strip()
+                            latency = "-"
+                            
+                        f.write(f"<tr><td>{hop}</td><td>{ip}</td><td>{latency}</td></tr>")
+                        f.write("</table>")
+                        f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
                     else:
-                        address = hop_raw
-                        detail = "-"
-                    f.write(f"<tr><td>{idx}</td><td>{address}</td><td>{detail}</td></tr>")
-                f.write("</table>")
-                f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
-            else:
-                f.write("<p><i>No traceroute data available.</i></p>")
+                        f.write("<p><i>No traceroute data available.</i></p>")
+
 
             # Graphs
             f.write("<h3>Graphs</h3>")
