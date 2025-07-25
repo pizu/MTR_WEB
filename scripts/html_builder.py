@@ -82,12 +82,12 @@ function filterLogs() {
                 f.write("<h3>Traceroute</h3><table><tr><th>Hop</th><th>Address</th><th>Details</th></tr>")
                 for idx, line in enumerate(traceroute, start=1):
                     parts = line.strip().split()
-                    ipaddr = parts[1] if len(parts) >= 2 else line.strip()
-                    latency = parts[2] + " " + parts[3] if len(parts) > 3 else parts[2] if len(parts) > 2 else "-"
-                    if ipaddr == "???":
-                        ipaddr = "Request timed out"
+                    hop_ip = parts[1] if len(parts) >= 2 else "???"
+                    latency = parts[2] + " " + parts[3] if len(parts) > 3 else (parts[2] if len(parts) > 2 else "-")
+                    if hop_ip == "???":
+                        hop_ip = "Request timed out"
                         latency = "-"
-                    f.write(f"<tr><td>{idx}</td><td>{ipaddr}</td><td>{latency}</td></tr>")
+                        f.write(f"<tr><td>{idx}</td><td>{hop_ip}</td><td>{latency}</td></tr>")
                 f.write("</table>")
 
             f.write("<h3>Graphs</h3>")
