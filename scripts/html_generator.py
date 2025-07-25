@@ -161,7 +161,7 @@ function filterLogs() {
             for i, label in enumerate(time_labels):
                 selected = "selected" if i == 0 else ""
                 f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
-                f.write("</select>")
+            f.write("</select>")
 
             # --- Summary Graphs (all hops in one chart) ---
             f.write("<h4>Summary (All Hops)</h4>")
