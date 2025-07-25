@@ -91,13 +91,22 @@ def generate_html(ip, description):
 
             # Graphs
             f.write("<h3>Graphs (Last 24h)</h3>")
-            for metric in ["avg", "last", "best", "loss"]:
-                graph_file = os.path.join(GRAPH_DIR, f"{ip}_{metric}.png")
-                if os.path.exists(graph_file):
-                    f.write(f"<div><b>{metric.upper()}:</b><br>")
-                    f.write(f"<img src='graphs/{ip}_{metric}.png'><br><br></div>")
-                else:
-                    logger.debug(f"Graph not found: {graph_file}")
+                for metric in ["avg", "last", "best", "loss"]:
+                    f.write(f"<h4>{metric.upper()} Graphs</h4>")
+                    found_any = False
+                    for rng in settings.get("graph_time_ranges", ["1h"]):
+                        img_filename = f"{ip}_{metric}_{rng}.png"
+                        img_path = os.path.join(GRAPH_DIR, img_filename)
+                        if os.path.exists(img_path):
+                            found_any = True
+                            f.write(f"<div style='margin-bottom:15px;'>")
+                            f.write(f"<strong>{rng.upper()}</strong><br>")
+                            f.write(f"<img src='../{GRAPH_DIR}/{img_filename}' alt='{metric} graph {rng}'><br>")
+                            f.write(f"</div>")
+                    if not found_any:
+                        f.write(f"<p>{metric.upper()} graphs not found.</p>\n")
+                    else:
+                        logger.debug(f"Graph not found: {graph_file}")
 
             # Logs
             f.write("<h3>Recent Logs</h3><pre>")
