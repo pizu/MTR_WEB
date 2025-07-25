@@ -20,12 +20,17 @@ args = parser.parse_args()
 
 settings = load_settings(args.settings)
 log_directory = settings.get("log_directory", "/tmp")
+traceroute_dir = settings.get("traceroute_directory", "traceroute")
+rrd_dir = settings.get("rrd_directory", "rrd")
+max_hops = settings.get("max_hops", 30)
+interval = settings.get("interval_seconds", 60)
+
 logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log")
 
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):
     values = []
-    for i in range(1, settings.get("max_hops", 30) + 1):
+    for i in range(1, max_hops + 1):
         hop = next((h for h in hops if h.get("count") == i), {})
         values += [
             hop.get("Avg", 'U'),
@@ -46,7 +51,7 @@ def update_rrd(rrd_path, hops, ip, debug_log=None):
             f.write(f"{datetime.now()} {ip} values: {values}\n")
 
 # Initialize RRD if not exists
-def init_rrd(rrd_path, max_hops):
+def init_rrd(rrd_path):
     if os.path.exists(rrd_path):
         return
     data_sources = []
@@ -55,7 +60,7 @@ def init_rrd(rrd_path, max_hops):
             data_sources.append(f"DS:hop{i}_{metric}:GAUGE:120:0:1000000")
     rrdtool.create(
         rrd_path,
-        "--step", "60",
+        "--step", str(interval),
         *data_sources,
         "RRA:AVERAGE:0.5:1:1440"
     )
@@ -91,15 +96,23 @@ def run_mtr(target, source_ip=None):
         logger.exception(f"[EXCEPTION] MTR run failed: {e}")
         return []
 
-# Save traceroute to file
-def save_trace(ip, hops):
-    traceroute_dir = settings.get("traceroute_directory", "traceroute")
+# Save traceroute text and JSON map
+def save_trace_and_json(ip, hops):
     os.makedirs(traceroute_dir, exist_ok=True)
-    path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
-    with open(path, "w") as f:
+
+    # Save plain text trace
+    txt_path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
+    with open(txt_path, "w") as f:
         for hop in hops:
             f.write(f"{hop.get('host', '???')}\n")
-    logger.info(f"Saved traceroute to {path}")
+    logger.info(f"Saved traceroute to {txt_path}")
+
+    # Save JSON hop label map
+    json_path = os.path.join(traceroute_dir, f"{ip}.json")
+    hop_map = {f"hop{hop['count']}": hop.get("host", f"hop{hop['count']}") for hop in hops}
+    with open(json_path, "w") as f:
+        json.dump(hop_map, f, indent=2)
+    logger.info(f"Saved hop label map to {json_path}")
 
 # Compare hop paths for changes
 def hops_changed(prev, curr):
@@ -109,8 +122,9 @@ def hops_changed(prev, curr):
 
 # Main monitoring loop
 def monitor_target(ip, source_ip=None):
-    rrd_path = os.path.join(settings["rrd_directory"], f"{ip}.rrd")
-    init_rrd(rrd_path, settings.get("max_hops", 30))
+    os.makedirs(rrd_dir, exist_ok=True)
+    rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
+    init_rrd(rrd_path)
     debug_rrd_log = os.path.join(log_directory, "rrd_debug.log")
 
     prev_hops = []
@@ -121,7 +135,7 @@ def monitor_target(ip, source_ip=None):
 
         if not hops:
             logger.warning(f"No data returned from MTR for {ip}")
-            time.sleep(settings["interval_seconds"])
+            time.sleep(interval)
             continue
 
         if hops_changed(prev_hops, hops):
@@ -138,9 +152,9 @@ def monitor_target(ip, source_ip=None):
             logger.warning(f"{ip} loss at hop {hop.get('count')}: {hop.get('Loss%')}%")
 
         update_rrd(rrd_path, hops, ip, debug_rrd_log)
-        save_trace(ip, hops)
+        save_trace_and_json(ip, hops)
 
-        time.sleep(settings["interval_seconds"])
+        time.sleep(interval)
 
 # Start monitoring
 monitor_target(args.target, args.source)
