@@ -69,7 +69,7 @@ with open(index_path, "w") as f:
             }
         }
 
-        setTimeout(() => location.reload(), 60000); // auto-refresh every 60 seconds
+        setTimeout(() => location.reload(), 60000);
     </script>
 </head>
 <body>
@@ -91,12 +91,18 @@ with open(index_path, "w") as f:
 
         status = "N/A"
         last_seen = "Never"
+
         if os.path.exists(log_path):
             with open(log_path) as logf:
                 lines = [line.strip() for line in logf if "MTR RUN" in line]
-                if lines:
-                    last_line = lines[-1]
-                    last_seen = last_line.split("]")[0].strip("[")
+                last_seen_line = lines[-1] if lines else ""
+                last_seen = last_seen_line.split("]")[0].strip("[") if last_seen_line else "Never"
+
+            with open(log_path) as logf:
+                recent = logf.read()
+                if "No data returned" in recent or "Loss at hop" not in recent:
+                    status = "Unreachable"
+                else:
                     status = "Reachable"
 
         f.write("<tr>")
@@ -111,4 +117,4 @@ with open(index_path, "w") as f:
 </body>
 </html>""")
 
-print("[UPDATED with sorting, filtering, and auto-refresh] index.html")
+print("[UPDATED] index.html with proper status detection")
