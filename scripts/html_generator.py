@@ -20,6 +20,7 @@ LOG_LINES_DISPLAY = settings.get("log_lines_display", 50)
 try:
     with open("mtr_targets.yaml") as f:
         targets = yaml.safe_load(f)["targets"]
+    target_ips = [t["ip"] for t in targets]
     logger.info(f"Loaded {len(targets)} targets from mtr_targets.yaml")
 except Exception as e:
     logger.exception("Failed to load mtr_targets.yaml")
@@ -58,10 +59,15 @@ def generate_html(ip, description):
     # Build HTML
     try:
         with open(html_path, "w") as f:
-            f.write(f"<html><head><title>{ip}</title><meta charset='utf-8'></head><body>")
+            f.write("<html><head>")
+            f.write(f"<title>{ip}</title><meta charset='utf-8'>")
+            f.write("</head><body>")
+
             f.write(f"<h2>{ip}</h2>")
             if description:
                 f.write(f"<p><b>{description}</b></p>")
+
+            f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
 
             if traceroute:
                 f.write("<h3>Traceroute</h3><pre>")
@@ -71,7 +77,7 @@ def generate_html(ip, description):
             else:
                 f.write("<p><i>No traceroute data available.</i></p>")
 
-            f.write("<h3>Graphs</h3>")
+            f.write("<h3>Graphs (Last 24h)</h3>")
             for metric in ["avg", "last", "best", "loss"]:
                 graph_file = os.path.join(GRAPH_DIR, f"{ip}_{metric}.png")
                 if os.path.exists(graph_file):
@@ -94,8 +100,20 @@ def generate_html(ip, description):
     except Exception as e:
         logger.exception(f"Failed to write HTML for {ip}: {e}")
 
-# Generate per-target pages
+# Generate per-target HTML pages
 for target in targets:
     ip = target["ip"]
     desc = target.get("description", "")
     generate_html(ip, desc)
+
+# Optional: Clean up orphaned .html files
+try:
+    all_html_files = [f for f in os.listdir(HTML_DIR) if f.endswith(".html") and f != "index.html"]
+    for f in all_html_files:
+        ip_from_file = f.replace(".html", "")
+        if ip_from_file not in target_ips:
+            path_to_delete = os.path.join(HTML_DIR, f)
+            os.remove(path_to_delete)
+            logger.info(f"Removed stale HTML file: {path_to_delete}")
+except Exception as e:
+    logger.warning(f"Failed to clean orphan HTML files: {e}")
