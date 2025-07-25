@@ -32,8 +32,8 @@ def get_color_by_hop(hop_index):
     b = int((1 + math.sin(hop_index * 0.3 + 4)) * 127)
     return f"{r:02x}{g:02x}{b:02x}"
 
-# Load traceroute hop labels and latencies
-def get_labels_and_rtt(ip):
+# Load traceroute hop labels
+def get_labels(ip):
     path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     if not os.path.exists(path):
         return []
@@ -46,46 +46,42 @@ def get_labels_and_rtt(ip):
                 continue
             parts = line.split(maxsplit=2)
             if len(parts) >= 2:
-                hop_num = int(parts[0])
-                hop_ip = parts[1]
-                hops.append((hop_num, f"Hop {hop_num} - {hop_ip}"))
-            elif len(parts) == 1:
-                hop_num = int(parts[0])
-                hops.append((hop_num, f"Hop {hop_num} - unknown"))
+                try:
+                    hop_num = int(parts[0])
+                    hop_ip = parts[1]
+                    hops.append((hop_num, f"Hop {hop_num} - {hop_ip}"))
+                except ValueError:
+                    continue
     return hops
 
-# Remove existing graphs for IP
-def clean_old_graphs(ip):
+# Remove obsolete graphs for this IP
+def clean_old_graphs(ip, expected_pngs):
     for fname in os.listdir(GRAPH_DIR):
         if fname.startswith(f"{ip}_") and fname.endswith(".png"):
-            try:
-                os.remove(os.path.join(GRAPH_DIR, fname))
-                logger.info(f"[CLEANED] {fname}")
-            except Exception as e:
-                logger.warning(f"[SKIP CLEANUP] {fname}: {e}")
+            full_path = os.path.join(GRAPH_DIR, fname)
+            if fname not in expected_pngs:
+                try:
+                    os.remove(full_path)
+                    logger.info(f"[CLEANED] {fname}")
+                except Exception as e:
+                    logger.warning(f"[SKIP CLEANUP] {fname}: {e}")
 
-# Generate RRD graph for one metric and time range
-def generate_graph(ip, metric, timerange):
+# Generate one graph
+def generate_graph(ip, metric, timerange, hops):
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
-    png_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}_{timerange}.png")
+    png_filename = f"{ip}_{metric}_{timerange}.png"
+    png_path = os.path.join(GRAPH_DIR, png_filename)
 
     if not os.path.exists(rrd_path):
         logger.warning(f"[SKIP] No RRD for {ip}")
         return
 
-    hops = get_labels_and_rtt(ip)
-    if not hops:
-        logger.warning(f"[SKIP] No traceroute data for {ip}")
-        return
-
-    # Filter to max_hops
-    hops = sorted(hops, key=lambda h: h[0])
-    hops = [h for h in hops if h[0] <= MAX_HOPS]
-
     defs = []
     lines = []
 
     for hop_index, raw_label in hops:
+        if hop_index > MAX_HOPS:
+            continue
         ds_name = f"hop{hop_index}_{metric}"
         safe_label = sanitize_label(raw_label)
         color = get_color_by_hop(hop_index)
@@ -107,13 +103,25 @@ def generate_graph(ip, metric, timerange):
     except rrdtool.OperationalError as e:
         logger.error(f"[ERROR] {ip} - {metric} ({timerange}): {e}")
 
-# Main processing loop
+# Main process
 with open("mtr_targets.yaml") as f:
     targets = yaml.safe_load(f)["targets"]
 
 for target in targets:
     ip = target["ip"]
-    clean_old_graphs(ip)
+    hops = get_labels(ip)
+    if not hops:
+        logger.warning(f"[SKIP] No valid traceroute data for {ip}")
+        continue
+
+    # Build expected graph filenames
+    expected_pngs = []
     for metric in ["avg", "last", "best", "loss"]:
         for rng in TIME_RANGES:
-            generate_graph(ip, metric, rng)
+            expected_pngs.append(f"{ip}_{metric}_{rng}.png")
+
+    clean_old_graphs(ip, expected_pngs)
+
+    for metric in ["avg", "last", "best", "loss"]:
+        for rng in TIME_RANGES:
+            generate_graph(ip, metric, rng, hops)
