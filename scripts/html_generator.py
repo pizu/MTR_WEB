@@ -12,7 +12,7 @@ logger = setup_logger("html_generator", log_directory, "html_generator.log")
 LOG_DIR = settings.get("log_directory", "logs")
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
 HTML_DIR = "html"
-TRACEROUTE_DIR = "traceroute"
+TRACEROUTE_DIR = settings.get("traceroute_directory", "traceroute")
 LOG_LINES_DISPLAY = settings.get("log_lines_display", 50)
 TIME_RANGES = settings.get("graph_time_ranges", [{"label": "1h", "seconds": 3600}])
 REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
@@ -30,7 +30,7 @@ except Exception as e:
 def get_available_hops(ip):
     hops = set()
     for fname in os.listdir(GRAPH_DIR):
-        match = re.match(rf"{re.escape(ip)}_hop(\d+)_", fname)
+        match = re.match(rf"{re.escape(ip)}_hop(\d+)_avg_", fname)
         if match:
             hops.add(int(match.group(1)))
     return sorted(hops)
@@ -46,13 +46,15 @@ body { font-family: Arial; margin: 20px; background: #f4f4f4; }
 .graph-section { margin-bottom: 25px; border: 1px solid #ccc; padding: 10px; background: #fff; }
 .graph-header { display: flex; justify-content: space-between; align-items: center; }
 .graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 10px; }
-</style><script>
+</style>
+<script>
 function setHopTimeRange(ip, hop, selected) {
     document.querySelectorAll(`.hop-graph-${ip}-${hop}`).forEach(el => {
         el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
     });
 }
-</script></head><body>""")
+</script>
+</head><body>""")
 
             f.write(f"<h2>Per-Hop Graphs — {ip}</h2>")
             if description:
@@ -62,29 +64,29 @@ function setHopTimeRange(ip, hop, selected) {
             if not hops:
                 f.write("<p><i>No per-hop graphs available.</i></p>")
                 logger.warning(f"[{ip}] No hops found for per-hop HTML.")
-            else:
-                for hop in hops:
-                    f.write(f"<div class='graph-section'><div class='graph-header'><h3>Hop {hop}</h3></div>")
+                return
 
-                    f.write(f"<label>Time Range: </label>")
-                    f.write(f"<select onchange=\"setHopTimeRange('{ip}', {hop}, this.value)\">")
+            for hop in hops:
+                f.write(f"<div class='graph-section'><div class='graph-header'><h3>Hop {hop}</h3></div>")
+                f.write(f"<label>Time Range: </label><select onchange=\"setHopTimeRange('{ip}', {hop}, this.value)\">")
+                for i, label in enumerate(TIME_RANGES):
+                    selected = "selected" if i == 0 else ""
+                    f.write(f"<option value='{label['label']}' {selected}>{label['label'].upper()}</option>")
+                f.write("</select>")
+
+                for metric in ["avg", "last", "best", "loss"]:
+                    f.write("<div class='graph-grid'>")
                     for i, label in enumerate(TIME_RANGES):
-                        selected = "selected" if i == 0 else ""
-                        f.write(f"<option value='{label['label']}' {selected}>{label['label'].upper()}</option>")
-                    f.write("</select>")
+                        png = f"{ip}_hop{hop}_{metric}_{label['label']}.png"
+                        if os.path.exists(os.path.join(GRAPH_DIR, png)):
+                            display = "block" if i == 0 else "none"
+                            f.write(f"<div style='display:{display}' class='hop-graph-{ip}-{hop}' data-range='{label['label']}'>")
+                            f.write(f"<img src='graphs/{png}' alt='Hop {hop} {metric} {label['label']}' loading='lazy'>")
+                            f.write("</div>")
+                    f.write("</div>")  # graph-grid
+                f.write("</div>")  # graph-section
 
-                    for metric in ["avg", "last", "best", "loss"]:
-                        f.write("<div class='graph-grid'>")
-                        for i, label in enumerate(TIME_RANGES):
-                            filename = f"{ip}_hop{hop}_{metric}_{label['label']}.png"
-                            full_path = os.path.join(GRAPH_DIR, filename)
-                            if os.path.exists(full_path):
-                                display = "block" if i == 0 else "none"
-                                f.write(f"<div style='display:{display}' class='hop-graph-{ip}-{hop}' data-range='{label['label']}'>")
-                                f.write(f"<img src='graphs/{filename}' alt='Hop {hop} {metric} {label['label']}' loading='lazy'>")
-                                f.write("</div>")
-                        f.write("</div>")  # graph-grid
-                    f.write("</div>")  # graph-section
+            f.write("</body></html>")
         logger.info(f"[{ip}] Per-hop HTML generated: {html_path}")
     except Exception as e:
         logger.exception(f"[{ip}] Failed to generate per-hop HTML")
@@ -125,9 +127,6 @@ def generate_html(ip, description):
             f.write(f"<title>{ip}</title>")
             f.write("""<style>
 body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
-h2 { margin-top: 0; }
-table { border-collapse: collapse; width: 100%; }
-th, td { padding: 5px 10px; border: 1px solid #ccc; }
 .graph-section { margin-bottom: 25px; border: 1px solid #ddd; padding: 10px; background: #fff; }
 .graph-header { display: flex; justify-content: space-between; align-items: center; }
 .graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 10px; }
@@ -151,7 +150,8 @@ function filterLogs() {
         line.style.display = line.innerText.toLowerCase().includes(input) ? '' : 'none';
     }
 }
-</script></head><body>""")
+</script>
+</head><body>""")
 
             f.write(f"<h2>{ip}</h2>")
             if description:
@@ -161,7 +161,7 @@ function filterLogs() {
             f.write(f"<p><i>Generated: {generated_time} — {refresh_note}</i></p>")
 
             if traceroute:
-                f.write("<h3>Traceroute</h3><table><tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
+                f.write("<h3>Traceroute</h3><table><tr><th>Hop</th><th>Address</th><th>Details</th></tr>")
                 for idx, line in enumerate(traceroute, start=1):
                     parts = line.strip().split()
                     ipaddr = parts[1] if len(parts) >= 2 else line.strip()
@@ -171,7 +171,6 @@ function filterLogs() {
                         latency = "-"
                     f.write(f"<tr><td>{idx}</td><td>{ipaddr}</td><td>{latency}</td></tr>")
                 f.write("</table>")
-                f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
 
             f.write("<h3>Graphs</h3>")
             f.write("<label>Time Range: </label>")
@@ -195,17 +194,12 @@ function filterLogs() {
                         f.write("</div>")
                 f.write("</div></div></div>")
 
-            # Link to hop page
-            hop_page = f"{ip}_hops.html"
             f.write("<h4>Per-Hop Graphs</h4>")
-            f.write(f"<p><a href='{hop_page}' target='_blank'><button>Open Per-Hop Graphs</button></a></p>")
+            f.write(f"<p><a href='{ip}_hops.html' target='_blank'><button>Open Per-Hop Graphs</button></a></p>")
 
             f.write("<h3>Recent Logs</h3>")
             f.write("<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
-            f.write("<table class='log-table'><thead><tr style='background-color:#333; color:white;'>")
-            f.write("<th style='padding:5px;border:1px solid #ccc;'>Timestamp</th>")
-            f.write("<th style='padding:5px;border:1px solid #ccc;'>Level</th>")
-            f.write("<th style='padding:5px;border:1px solid #ccc;'>Message</th></tr></thead><tbody>")
+            f.write("<table class='log-table'><thead><tr><th>Timestamp</th><th>Level</th><th>Message</th></tr></thead><tbody>")
 
             ts_re = re.compile(r"\[(.*?)\]\s*(.*)")
             for line in logs:
@@ -226,19 +220,22 @@ function filterLogs() {
         logger.info(f"Generated HTML page: {html_path}")
         generate_per_hop_html(ip, hops, description)
     except Exception as e:
-        logger.exception(f"Failed to write main HTML for {ip}")
+        logger.exception(f"[{ip}] Failed to generate HTML")
 
-# Run for all targets
+# Run for each target
 for target in targets:
     ip = target["ip"]
-    desc = target.get("description", "")
-    generate_html(ip, desc)
+    description = target.get("description", "")
+    generate_html(ip, description)
 
 # Clean old files
 try:
     all_html = [f for f in os.listdir(HTML_DIR) if f.endswith(".html") and f != "index.html"]
     for f in all_html:
-        ip_clean = f.replace(".html", "").replace("_hops", "")
+        if f.endswith("_hops.html"):
+            ip_clean = f.replace("_hops.html", "")
+        else:
+            ip_clean = f.replace(".html", "")
         if ip_clean not in target_ips:
             os.remove(os.path.join(HTML_DIR, f))
             logger.info(f"Removed stale HTML file: {f}")
