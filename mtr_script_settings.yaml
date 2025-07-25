@@ -14,8 +14,11 @@ enable_fping_check: true
 graph_width: 800
 graph_height: 200
 graph_time_ranges:
-  - 1h
-  - 6h
-  - 12h
-  - 24h
-  - 1w
+  - label: "1h"
+    seconds: 3600
+  - label: "6h"
+    seconds: 21600
+  - label: "12h"
+    seconds: 43200
+  - label: "24h"
+    seconds: 86400
