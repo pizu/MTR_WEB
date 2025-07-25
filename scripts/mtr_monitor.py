@@ -1,125 +1,107 @@
-# mtr_monitor.py
-#
-# Monitors a single IP using mtr --json, updates RRD, and logs changes.
-# Patched with safe_float(), RRD debug logging, JSON key normalization, and per-IP logs.
-
+#!/usr/bin/env python3
 import subprocess
-import json
 import time
-import os
 import yaml
-import rrdtool
+import json
+import os
 import logging
 from datetime import datetime
 
-def safe_float(val):
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return 'U'
+# Load settings
+with open("mtr_script_settings.yaml") as f:
+    settings = yaml.safe_load(f)
 
-def load_config(path):
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+with open("mtr_targets.yaml") as f:
+    targets = yaml.safe_load(f)["targets"]
 
-def init_logger(ip, log_dir):
-    os.makedirs(log_dir, exist_ok=True)
-    logger = logging.getLogger(ip)
-    logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(os.path.join(log_dir, f"{ip}.log"))
-    formatter = logging.Formatter('%(asctime)s %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
+INTERVAL = settings.get("interval_seconds", 60)
+LOG_DIR = settings.get("log_directory", "logs")
+RRD_DIR = settings.get("rrd_directory", "data")
+TRACEROUTE_DIR = "traceroute"
+MAX_HOPS = settings.get("max_hops", 30)
 
-def run_mtr(target, source_ip=None):
-    cmd = ["mtr", "--json", "--report-cycles", "1", target]
-    if source_ip:
-        cmd = ["mtr", "--json", "--report-cycles", "1", "--source", source_ip, target]
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(RRD_DIR, exist_ok=True)
+os.makedirs(TRACEROUTE_DIR, exist_ok=True)
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout)
-        else:
-            print(f"[ERROR] mtr failed for {target}")
-            print("STDOUT:", result.stdout.strip())
-            print("STDERR:", result.stderr.strip())
-            return None
-    except Exception as e:
-        print(f"[EXCEPTION] mtr failed for {target}: {e}")
-        return None
+# Logging
+logging.basicConfig(
+    filename="mtr_master.log",
+    format="%(asctime)s %(message)s",
+    level=logging.INFO
+)
 
-def ensure_rrd(rrd_path):
-    if not os.path.exists(rrd_path):
-        ds_list = []
-        for i in range(1, 31):
-            for metric in ['avg', 'last', 'best', 'loss']:
-                ds_list.append(f"DS:hop{i}_{metric}:GAUGE:600:0:U")
-        rrdtool.create(
-            rrd_path,
-            "--step", "60",
-            *(ds_list + ["RRA:AVERAGE:0.5:1:1440"])
-        )
+# Save traceroute info
+def save_traceroute(ip, hops):
+    lines = []
+    for hop in hops:
+        if hop.get("host"):
+            lines.append(hop["host"])
+    path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
 
-def update_rrd(rrd_path, hops, ip):
-    ensure_rrd(rrd_path)
-    values = []
-    for i in range(30):
-        try:
-            h = hops[i]
-        except IndexError:
-            h = {}
-        values += [
-            safe_float(h.get('Avg')),
-            safe_float(h.get('Last')),
-            safe_float(h.get('Best')),
-            safe_float(h.get('Loss%'))
-        ]
-    with open("rrd_debug.log", "a") as dbg:
-        dbg.write(f"{datetime.now()} {ip} values: {values}\n")
-    rrdtool.update(rrd_path, f"N:{':'.join(str(v) for v in values)}")
+# Load previous traceroute (for hop change detection)
+def load_previous_traceroute(ip):
+    path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return f.read().splitlines()
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True)
-    parser.add_argument("--settings", default="mtr_script_settings.yaml")
-    args = parser.parse_args()
+# Compare hop paths
+def detect_hop_changes(old, new):
+    if old != new:
+        return f"HOP CHANGE DETECTED\nOLD: {old}\nNEW: {new}"
+    return None
 
-    config = load_config(args.settings)
-    rrd_dir = config["rrd_directory"]
-    log_dir = config["log_directory"]
-    os.makedirs(rrd_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
+# Detect loss events
+def detect_loss(hops):
+    loss_lines = []
+    for hop in hops:
+        if hop.get("Loss%") and hop["Loss%"] > 0:
+            loss_lines.append(f"LOSS: {hop.get('count')}. {hop.get('host')} {hop['Loss%']}%")
+    return loss_lines
 
-    rrd_path = os.path.join(rrd_dir, f"{args.target}.rrd")
-    interval = config.get("interval_seconds", 60)
-
-    logger = init_logger(args.target, log_dir)
-    logger.info("Started MTR monitoring")
-
-    source_ip = None
-    for t in yaml.safe_load(open("mtr_targets.yaml"))["targets"]:
-        if t["ip"] == args.target:
-            source_ip = t.get("source_ip")
-            break
-
+# Main MTR loop
+def run_mtr_loop():
     while True:
-        result = run_mtr(args.target, source_ip)
-        if result:
-            print(f"[DEBUG] MTR JSON result = {json.dumps(result, indent=2)}")
-            hops = result.get("report", {}).get("hubs", [])
-            if hops:
-                update_rrd(rrd_path, hops, args.target)
-                logger.info(f"Updated RRD with {len(hops)} hops")
-            else:
-                logger.warning("No valid hop data found in JSON")
-        else:
-            logger.warning("No result from mtr")
+        for target in targets:
+            ip = target["ip"]
+            log_path = os.path.join(LOG_DIR, f"{ip}.log")
+            try:
+                cmd = ["mtr", "--json", "--report", "--report-cycles", "10", ip]
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                data = json.loads(proc.stdout)
+                hops = data["report"]["hubs"]
+                current_hop_path = [h.get("host", "???") for h in hops]
 
-        time.sleep(interval)
+                # Save traceroute
+                save_traceroute(ip, hops)
+
+                # Detect hop changes
+                old_path = load_previous_traceroute(ip)
+                hop_change = detect_hop_changes(old_path, current_hop_path)
+
+                # Detect loss
+                loss_alerts = detect_loss(hops)
+
+                # Log events
+                with open(log_path, "a") as logf:
+                    timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+                    logf.write(f"{timestamp} MTR RUN\n")
+                    if hop_change:
+                        logf.write(f"{timestamp} {hop_change}\n")
+                    for loss in loss_alerts:
+                        logf.write(f"{timestamp} {loss}\n")
+                    logf.write(f"{timestamp} HOPS: {current_hop_path}\n\n")
+
+                logging.info(f"MTR complete for {ip}")
+
+            except Exception as e:
+                logging.error(f"Failed MTR for {ip}: {e}")
+        time.sleep(INTERVAL)
 
 if __name__ == "__main__":
-    main()
+    logging.info("=== MTR Monitor Script STARTED ===")
+    run_mtr_loop()
