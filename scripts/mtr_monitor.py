@@ -70,7 +70,7 @@ def run_mtr_loop():
             ip = target["ip"]
             log_path = os.path.join(LOG_DIR, f"{ip}.log")
             try:
-                cmd = ["mtr", "--json", "--report", "--report-cycles", "10", ip]
+                cmd = ["mtr", "--json", "--report-cycles", "10", ip]
                 proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 data = json.loads(proc.stdout)
                 hops = data["report"]["hubs"]
