@@ -90,8 +90,7 @@ def generate_html(ip, description):
                 f.write(f"<p><b>{description}</b></p>")
             f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
 
-            # Traceroute table (corrected format)
-            # Traceroute table for structured format
+            # Traceroute table (correctly parsed format)
             if traceroute:
                 f.write("<h3>Traceroute</h3>")
                 f.write("<table><tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
@@ -99,23 +98,21 @@ def generate_html(ip, description):
                     parts = line.strip().split()
                     if len(parts) >= 3:
                         hop = parts[0]
-                        ip = parts[1]
+                        ipaddr = parts[1]
                         latency = parts[2] + " " + parts[3] if len(parts) > 3 else parts[2]
-                        
-                        if ip == "???":
-                            ip = "Request timed out"
-                            latency = "-"
-                        else:
-                            hop = "?"
-                            ip = line.strip()
-                            latency = "-"
-                            
-                        f.write(f"<tr><td>{hop}</td><td>{ip}</td><td>{latency}</td></tr>")
-                        f.write("</table>")
-                        f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
-                    else:
-                        f.write("<p><i>No traceroute data available.</i></p>")
 
+                        if ipaddr == "???":
+                            ipaddr = "Request timed out"
+                            latency = "-"
+                    else:
+                        hop = "?"
+                        ipaddr = line.strip()
+                        latency = "-"
+                    f.write(f"<tr><td>{hop}</td><td>{ipaddr}</td><td>{latency}</td></tr>")
+                f.write("</table>")
+                f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
+            else:
+                f.write("<p><i>No traceroute data available.</i></p>")
 
             # Graphs
             f.write("<h3>Graphs</h3>")
@@ -150,6 +147,7 @@ def generate_html(ip, description):
                 if not found_any:
                     f.write(f"<p>No graphs found for {metric.upper()}.</p>")
                 f.write("</div></div></div>")  # end grid + section
+
             # Logs
             f.write("<h3>Recent Logs</h3><pre>")
             if logs:
