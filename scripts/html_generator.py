@@ -93,8 +93,8 @@ function toggleSection(id) {
     const el = document.getElementById(id);
     el.classList.toggle('hidden');
 }
-function switchGraph(ip, metric, selected) {
-    document.querySelectorAll(`.graph-img-${metric}-${ip}`).forEach(el => {
+function setGlobalTimeRange(ip, selected) {
+    document.querySelectorAll(`.graph-img-global-${ip}`).forEach(el => {
         el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
     });
 }
@@ -139,7 +139,13 @@ function filterLogs() {
                 f.write("<p><i>No traceroute data available.</i></p>")
 
             f.write("<h3>Graphs</h3>")
-            time_labels = [tr["label"] for tr in TIME_RANGES]
+            f.write("<label>Time Range: </label>")
+            f.write(f"<select onchange=\"setGlobalTimeRange('{ip}', this.value)\">")
+            for i, label in enumerate(time_labels):
+                selected = "selected" if i == 0 else ""
+                f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
+                f.write("</select>")
+
             # --- Summary Graphs (all hops in one chart) ---
             f.write("<h4>Summary (All Hops)</h4>")
             for metric in ["avg", "last", "best", "loss"]:
@@ -161,7 +167,7 @@ function filterLogs() {
                         full_path = os.path.join(GRAPH_DIR, filename)
                         if os.path.exists(full_path):
                             display = "block" if i == 0 else "none"
-                            f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
+                            f.write(f"<div style='display:{display}' class='graph-img-global-{ip}' data-range='{label}'>")
                             f.write(f"<img src='graphs/{filename}' alt='{metric} summary {label}' loading='lazy'>")
                             f.write("</div>")
                             f.write("</div>")  # end graph-grid
