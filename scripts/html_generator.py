@@ -90,7 +90,7 @@ def generate_html(ip, description):
                 f.write(f"<p><b>{description}</b></p>")
             f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
 
-            # Traceroute
+            # Traceroute table (corrected format)
             if traceroute:
                 f.write("<h3>Traceroute</h3>")
                 f.write("<table><tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
@@ -98,14 +98,13 @@ def generate_html(ip, description):
                     hop_raw = line.strip()
                     if not hop_raw:
                         continue
+                    if hop_raw == "???":
+                        address = "Request timed out"
+                        detail = "-"
+                    else:
                         address = hop_raw
-                        if address == "???":
-                            address = "Request timed out"
-                            detail = "-"
-                        else:
-                            detail = "-"
-                            f.write(f"<tr><td>{idx}</td><td>{address}</td><td>{detail}</td></tr>")
-
+                        detail = "-"
+                    f.write(f"<tr><td>{idx}</td><td>{address}</td><td>{detail}</td></tr>")
                 f.write("</table>")
                 f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
             else:
@@ -120,7 +119,7 @@ def generate_html(ip, description):
                 f.write(f"<div class='graph-header'><h4>{metric.upper()} Graphs</h4>")
                 f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
                 f.write(f"<div id='{section_id}' class=''>")
-                # Range switcher
+                # Range selector
                 f.write(f"<label>Time Range: </label>")
                 f.write(f"<select onchange=\"switchGraph('{ip}', '{metric}', this.value)\">")
                 for i, rng in enumerate(time_ranges):
@@ -143,9 +142,7 @@ def generate_html(ip, description):
                         logger.debug(f"Graph not found: {img_path}")
                 if not found_any:
                     f.write(f"<p>No graphs found for {metric.upper()}.</p>")
-                f.write("</div>")  # end graph-grid
-                f.write("</div></div>")  # end section
-
+                f.write("</div></div></div>")  # end grid + section
             # Logs
             f.write("<h3>Recent Logs</h3><pre>")
             if logs:
