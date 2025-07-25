@@ -110,12 +110,17 @@ try:
                 except Exception as e:
                     logger.warning(f"Could not read log for {ip}: {e}")
 
-            # Check IP reachability using fping
+            # Check IP reachability using fping, fallback to Unreachable if any failure
             try:
-                subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                status = "Reachable"
-            except subprocess.CalledProcessError:
-                status = "Unreachable"
+                result = subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                status = "Reachable" if result.returncode == 0 else "Unreachable"
+            except FileNotFoundError:
+                logger.warning(f"fping command not found. Skipping reachability check for {ip}.")
+                status = "Unknown"
+            except Exception as e:
+                logger.warning(f"fping failed for {ip}: {e}")
+                status = "Unknown"
+
 
             f.write("<tr>")
             f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
