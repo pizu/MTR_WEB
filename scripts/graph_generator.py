@@ -58,10 +58,11 @@ def generate_graph(ip, metric, timerange):
 
     for i in range(1, MAX_HOPS + 1):
         ds_name = f"hop{i}_{metric}"
-        label = traceroute_labels[i - 1] if i - 1 < len(traceroute_labels) else f"Hop{i}"
+        raw_label = traceroute_labels[i - 1] if i - 1 < len(traceroute_labels) else f"Hop{i} (unknown)"
+        safe_label = sanitize_label(raw_label)
         color = f"{(i * 73 % 256):02x}{(i * 137 % 256):02x}{(255 - i * 47 % 256):02x}"
         defs.append(f"DEF:{ds_name}={rrd_path}:{ds_name}:AVERAGE")
-        lines.append(f"LINE1:{ds_name}#{color}:{label}")
+        lines.append(f"LINE1:{ds_name}#{color}:{safe_label}")
 
     cmd = defs + lines + [
         f"--title={ip} - {metric.upper()} ({timerange})",
