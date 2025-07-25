@@ -57,16 +57,6 @@ def generate_html(ip, description):
     else:
         logger.warning(f"No traceroute file found for {ip} at {trace_path}")
 
-    # Detect hop indices
-    hop_indices = []
-    for file in os.listdir(GRAPH_DIR):
-        match = re.match(rf"{re.escape(ip)}_hop(\d+)_avg_", file)
-        if match:
-            idx = int(match.group(1))
-            if idx not in hop_indices:
-                hop_indices.append(idx)
-    hop_indices.sort()
-
     try:
         with open(html_path, "w") as f:
             f.write("<html><head><meta charset='utf-8'>\n")
@@ -154,16 +144,14 @@ function filterLogs() {
                 f.write("</select>")
                 f.write("<div class='graph-grid'>")
 
-                for hop_index in hop_indices:
-                    for i, label in enumerate(time_labels):
-                        filename = f"{ip}_hop{hop_index}_{metric}_{label}.png"
-                        full_path = os.path.join(GRAPH_DIR, filename)
-                        if os.path.exists(full_path):
-                            display = "block" if i == 0 else "none"
-                            f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
-                            f.write(f"<img src='graphs/{filename}' alt='{metric} hop{hop_index} {label}' loading='lazy'><br>")
-                            f.write(f"<small>Hop {hop_index}</small>")
-                            f.write("</div>")
+                for i, label in enumerate(time_labels):
+                    filename = f"{ip}_{metric}_{label}.png"
+                    full_path = os.path.join(GRAPH_DIR, filename)
+                    if os.path.exists(full_path):
+                        display = "block" if i == 0 else "none"
+                        f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
+                        f.write(f"<img src='graphs/{filename}' alt='{metric} {label}' loading='lazy'><br>")
+                        f.write("</div>")
 
                 f.write("</div></div></div>")
 
