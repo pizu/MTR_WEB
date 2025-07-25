@@ -30,7 +30,7 @@ logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log")
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):
     values = []
-    for i in range(1, max_hops + 1):
+    for i in range(0, max_hops + 1):
         hop = next((h for h in hops if h.get("count") == i), {})
         values += [
             hop.get("Avg", 'U'),
@@ -55,7 +55,7 @@ def init_rrd(rrd_path):
     if os.path.exists(rrd_path):
         return
     data_sources = []
-    for i in range(1, max_hops + 1):
+    for i in range(0, max_hops + 1):
         for metric in ["avg", "last", "best", "loss"]:
             data_sources.append(f"DS:hop{i}_{metric}:GAUGE:120:0:1000000")
     rrdtool.create(
