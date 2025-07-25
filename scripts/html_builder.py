@@ -12,6 +12,7 @@ def generate_target_html(ip, description, hops, settings, logger):
     REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
     LOG_LINES_DISPLAY = settings.get("log_lines_display", 50)
 
+    safe_ip = ip.replace('.', '_')
     log_path = os.path.join(LOG_DIR, f"{ip}.log")
     trace_path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     html_path = os.path.join(HTML_DIR, f"{ip}.html")
@@ -55,8 +56,9 @@ function toggleSection(id) {
     el.classList.toggle('hidden');
 }
 function setGlobalTimeRange(ip, selected) {
+    const safeIp = ip.replaceAll('.', '_');
     ['avg', 'last', 'best', 'loss'].forEach(metric => {
-        document.querySelectorAll(`.graph-img-global-${ip}-${metric}`).forEach(el => {
+        document.querySelectorAll(`.graph-img-global-${safeIp}-${metric}`).forEach(el => {
             el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
         });
     });
@@ -99,7 +101,7 @@ function filterLogs() {
             f.write("</select>")
 
             for metric in ["avg", "last", "best", "loss"]:
-                section_id = f"summary-{ip}-{metric}"
+                section_id = f"summary-{safe_ip}-{metric}"
                 f.write(f"<div class='graph-section'><div class='graph-header'><h4>{metric.upper()} Summary</h4>")
                 f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
                 f.write(f"<div id='{section_id}' class=''><div class='graph-grid'>")
@@ -107,7 +109,7 @@ function filterLogs() {
                     filename = f"{ip}_{metric}_{label}.png"
                     if os.path.exists(os.path.join(GRAPH_DIR, filename)):
                         display = "block" if i == 0 else "none"
-                        f.write(f"<div style='display:{display}' class='graph-img-global-{ip}-{metric}' data-range='{label}'>")
+                        f.write(f"<div style='display:{display}' class='graph-img-global-{safe_ip}-{metric}' data-range='{label}'>")
                         f.write(f"<img src='graphs/{filename}' alt='{metric} summary {label}' loading='lazy'>")
                         f.write("</div>")
                 f.write("</div></div></div>")
@@ -139,62 +141,3 @@ function filterLogs() {
         generate_per_hop_html(ip, hops, description, settings, logger)
     except Exception as e:
         logger.exception(f"[{ip}] Failed to generate HTML")
-
-def generate_per_hop_html(ip, hops, description, settings, logger):
-    GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
-    HTML_DIR = "html"
-    TIME_RANGES = settings.get("graph_time_ranges", [{"label": "1h", "seconds": 3600}])
-    html_path = os.path.join(HTML_DIR, f"{ip}_hops.html")
-
-    try:
-        with open(html_path, "w") as f:
-            f.write("<html><head><meta charset='utf-8'>")
-            f.write(f"<title>Per-Hop Graphs — {ip}</title>")
-            f.write("""<style>
-body { font-family: Arial; margin: 20px; background: #f4f4f4; }
-.graph-section { margin-bottom: 25px; border: 1px solid #ccc; padding: 10px; background: #fff; }
-.graph-header { display: flex; justify-content: space-between; align-items: center; }
-.graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 10px; }
-</style>
-<script>
-function setHopTimeRange(ip, hop, selected) {
-    document.querySelectorAll(`.hop-graph-${ip}-${hop}`).forEach(el => {
-        el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
-    });
-}
-</script>
-</head><body>""")
-
-            f.write(f"<h2>Per-Hop Graphs — {ip}</h2>")
-            if description:
-                f.write(f"<p><b>{description}</b></p>")
-            f.write(f"<p><a href='{ip}.html'>← Back to main page</a></p>")
-
-            if not hops:
-                f.write("<p><i>No per-hop graphs available.</i></p>")
-                logger.warning(f"[{ip}] No hops found for per-hop HTML.")
-                return
-
-            for hop in hops:
-                f.write(f"<div class='graph-section'><div class='graph-header'><h3>Hop {hop}</h3></div>")
-                f.write(f"<label>Time Range: </label><select onchange=\"setHopTimeRange('{ip}', {hop}, this.value)\">")
-                for i, label in enumerate(TIME_RANGES):
-                    selected = "selected" if i == 0 else ""
-                    f.write(f"<option value='{label['label']}' {selected}>{label['label'].upper()}</option>")
-                f.write("</select>")
-
-                for metric in ["avg", "last", "best", "loss"]:
-                    f.write("<div class='graph-grid'>")
-                    for i, label in enumerate(TIME_RANGES):
-                        png = f"{ip}_hop{hop}_{metric}_{label['label']}.png"
-                        if os.path.exists(os.path.join(GRAPH_DIR, png)):
-                            display = "block" if i == 0 else "none"
-                            f.write(f"<div style='display:{display}' class='hop-graph-{ip}-{hop}' data-range='{label['label']}'>")
-                            f.write(f"<img src='graphs/{png}' alt='Hop {hop} {metric} {label['label']}' loading='lazy'>")
-                            f.write("</div>")
-                    f.write("</div>")
-                f.write("</div>")
-            f.write("</body></html>")
-        logger.info(f"[{ip}] Per-hop HTML generated: {html_path}")
-    except Exception as e:
-        logger.exception(f"[{ip}] Failed to generate per-hop HTML")
