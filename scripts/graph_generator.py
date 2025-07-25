@@ -9,21 +9,21 @@ settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("graph_generator", log_directory, "graph_generator.log")
 
-# Directories and parameters
 RRD_DIR = settings.get("rrd_directory", "data")
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
 TRACEROUTE_DIR = "traceroute"
 MAX_HOPS = settings.get("max_hops", 30)
 GRAPH_WIDTH = settings.get("graph_width", 800)
 GRAPH_HEIGHT = settings.get("graph_height", 200)
+TIME_RANGES = settings.get("graph_time_ranges", ["1h", "6h", "12h", "24h", "1w"])
 
 os.makedirs(GRAPH_DIR, exist_ok=True)
 
-# Load targets
+# Load target list
 with open("mtr_targets.yaml") as f:
     targets = yaml.safe_load(f)["targets"]
 
-# Load hop labels from traceroute (returns list of (hop_num, host))
+# Load traceroute hops
 def get_labels(ip):
     path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     if not os.path.exists(path):
@@ -43,10 +43,10 @@ def get_labels(ip):
                 hops.append(f"{len(hops)+1}: (unknown)")
     return hops
 
-# Generate graph for given IP and metric
-def generate_graph(ip, metric):
+# Generate a graph for an IP/metric/time range
+def generate_graph(ip, metric, timerange):
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
-    png_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}.png")
+    png_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}_{timerange}.png")
 
     if not os.path.exists(rrd_path):
         logger.warning(f"[SKIP] No RRD for {ip}")
@@ -64,22 +64,23 @@ def generate_graph(ip, metric):
         lines.append(f"LINE1:{ds_name}#{color}:{label}")
 
     cmd = defs + lines + [
-        f"--title={ip} - {metric.upper()} per hop",
+        f"--title={ip} - {metric.upper()} ({timerange})",
         f"--width={GRAPH_WIDTH}",
         f"--height={GRAPH_HEIGHT}",
         "--slope-mode",
         "--end", "now",
-        "--start", "-1h"
+        f"--start=-{timerange}"
     ]
 
     try:
         rrdtool.graph(png_path, *cmd)
         logger.info(f"[GRAPHED] {png_path}")
     except rrdtool.OperationalError as e:
-        logger.error(f"[ERROR] {ip} - {metric}: {e}")
+        logger.error(f"[ERROR] {ip} - {metric} ({timerange}): {e}")
 
-# Generate graphs for all targets and metrics
+# Generate all graphs
 for target in targets:
     ip = target["ip"]
     for metric in ["avg", "last", "best", "loss"]:
-        generate_graph(ip, metric)
+        for rng in TIME_RANGES:
+            generate_graph(ip, metric, rng)
