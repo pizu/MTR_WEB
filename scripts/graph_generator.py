@@ -2,6 +2,7 @@
 import os
 import yaml
 import rrdtool
+import re
 from utils import load_settings, setup_logger
 
 # Load settings and logger
@@ -23,7 +24,11 @@ os.makedirs(GRAPH_DIR, exist_ok=True)
 with open("mtr_targets.yaml") as f:
     targets = yaml.safe_load(f)["targets"]
 
-# Load traceroute hops
+# Helper: sanitize graph labels (remove colon and other bad chars)
+def sanitize_label(label):
+    return re.sub(r'[:\\\'"]', '-', label)
+
+# Load traceroute labels: returns ["1: hop1", "2: hop2", ...]
 def get_labels(ip):
     path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     if not os.path.exists(path):
@@ -43,7 +48,7 @@ def get_labels(ip):
                 hops.append(f"{len(hops)+1}: (unknown)")
     return hops
 
-# Generate a graph for an IP/metric/time range
+# Generate graph for a single IP/metric/range
 def generate_graph(ip, metric, timerange):
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     png_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}_{timerange}.png")
@@ -79,7 +84,7 @@ def generate_graph(ip, metric, timerange):
     except rrdtool.OperationalError as e:
         logger.error(f"[ERROR] {ip} - {metric} ({timerange}): {e}")
 
-# Generate all graphs
+# Main loop: all targets, all metrics, all time ranges
 for target in targets:
     ip = target["ip"]
     for metric in ["avg", "last", "best", "loss"]:
