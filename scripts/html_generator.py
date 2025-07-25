@@ -101,7 +101,9 @@ function filterLogs() {
             f.write(f"<h2>{ip}</h2>")
             if description:
                 f.write(f"<p><b>{description}</b></p>")
-            f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
+            generated_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            refresh_note = f"Auto-refresh every {REFRESH_SECONDS}s" if REFRESH_SECONDS > 0 else "Auto-refresh disabled"
+            logger.info(f"[{ip}] Generated HTML page at {generated_time} — {refresh_note}")
 
             if traceroute:
                 f.write("<h3>Traceroute</h3>")
