@@ -183,7 +183,8 @@ function filterLogs() {
                 f.write("</div></div></div>")  # end graph-grid, div, section
 
             # --- Per-Hop Graphs ---
-            f.write("<h4>Per-Hop Graphs</h4>")for hop in hops:
+            f.write("<h4>Per-Hop Graphs</h4>")
+            for hop in hops:
                 section_id = f"{ip}-hop{hop}"
                 f.write(f"<div class='graph-section'>")
                 f.write(f"<div class='graph-header'><h4>Hop {hop}</h4>")
