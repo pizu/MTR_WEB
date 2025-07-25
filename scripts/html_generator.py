@@ -70,7 +70,6 @@ def generate_html(ip, description):
     .graph-header { display: flex; justify-content: space-between; align-items: center; }
     .graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 10px; }
     .hidden { display: none; }
-    .log-box { max-height: 300px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 5px; font-family: monospace; font-size: 13px; }
     .log-line { white-space: pre-wrap; }
 </style>
 <script>
@@ -148,50 +147,41 @@ function filterLogs() {
                         f.write("</div>")
                 f.write("</div></div></div>")
 
-            # Logs (raw and table)
+            # Logs (structured table only)
             f.write(f"<h3>Recent Logs</h3>")
             f.write(f"<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
 
-            f.write("<details open><summary style='cursor: pointer; font-weight: bold;'>Raw Log View</summary>")
-            f.write("<div class='log-box'>")
-            if logs:
-                for line in logs:
-                    css_style = ""
-                    if "ERROR" in line:
-                        css_style = "color: red;"
-                    elif "WARNING" in line:
-                        css_style = "color: orange;"
-                    elif "INFO" in line:
-                        css_style = "color: lightgreen;"
-                    else:
-                        css_style = "color: white;"
-                    safe_line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    f.write(f"<div class='log-line' style='{css_style}'>{safe_line}</div>\n")
-            else:
-                f.write("<div class='log-line'>No logs available.</div>")
-            f.write("</div></details>")
-
-            f.write("<details><summary style='cursor: pointer; font-weight: bold;'>Structured Table View</summary>")
             f.write("<table class='log-table' style='width:100%; border-collapse: collapse; font-family: monospace; font-size: 13px;'>")
             f.write("<thead><tr style='background-color:#333; color:white;'><th style='padding:5px;border:1px solid #ccc;'>Timestamp</th><th style='padding:5px;border:1px solid #ccc;'>Level</th><th style='padding:5px;border:1px solid #ccc;'>Message</th></tr></thead><tbody>")
 
-            log_pattern = re.compile(r"(?:\[(.*?)\]\s*)?(?:\[(.*?)\]\s*)?(.*)")
+            timestamp_pattern = re.compile(r"\[(.*?)\]\s*(.*)")
             for line in logs:
-                match = log_pattern.match(line)
+                timestamp = ""
+                message = line
+                level = ""
+
+                match = timestamp_pattern.match(line)
                 if match:
-                    timestamp = match.group(1) or ""
-                    level = match.group(2) or ""
-                    message = match.group(3).strip()
-                    row_color = {
-                        "ERROR": "color: red;",
-                        "WARNING": "color: orange;",
-                        "INFO": "color: lightgreen;"
-                    }.get(level, "color: white;")
-                    message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    f.write(f"<tr class='log-line'><td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td><td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td><td style='border:1px solid #ccc;padding:5px;'>{message}</td></tr>")
-                else:
-                    f.write(f"<tr class='log-line'><td colspan='3' style='border:1px solid #ccc;padding:5px;'>{line}</td></tr>")
-            f.write("</tbody></table></details>")
+                    timestamp = match.group(1).strip()
+                    message = match.group(2).strip()
+
+                if "ERROR" in message:
+                    level = "ERROR"
+                elif "WARNING" in message:
+                    level = "WARNING"
+                elif "INFO" in message:
+                    level = "INFO"
+
+                row_color = {
+                    "ERROR": "color: red;",
+                    "WARNING": "color: orange;",
+                    "INFO": "color: lightgreen;"
+                }.get(level, "color: white;")
+
+                message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                f.write(f"<tr class='log-line'><td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td><td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td><td style='border:1px solid #ccc;padding:5px;'>{message}</td></tr>")
+
+            f.write("</tbody></table>")
 
             f.write("<hr><p><a href='index.html'>Back to index</a></p>")
             f.write("</body></html>")
