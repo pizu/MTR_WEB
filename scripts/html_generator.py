@@ -33,18 +33,27 @@ def generate_html(ip, description):
     trace_path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     html_path = os.path.join(HTML_DIR, f"{ip}.html")
 
-    # Load logs
     logs = []
     if os.path.exists(log_path):
         try:
             with open(log_path) as f:
-                logs = f.readlines()
-            logs = [line.strip() for line in logs if line.strip()]
-            logs = logs[-LOG_LINES_DISPLAY:][::-1]
+                logs = [line.strip() for line in f if line.strip()]
+                logs = logs[-LOG_LINES_DISPLAY:][::-1]
         except Exception as e:
             logger.warning(f"Could not read logs for {ip}: {e}")
-    else:
-        logger.warning(f"No log file found for {ip} at {log_path}")
+
+    traceroute = []
+    if os.path.exists(trace_path):
+        try:
+            with open(trace_path) as f:
+                traceroute = f.read().splitlines()
+        except Exception as e:
+            logger.warning(f"Could not read traceroute for {ip}: {e}")
+
+    hops = get_available_hops(ip)
+    
+    time_labels = [tr["label"] for tr in TIME_RANGES]
+
 
     # Load traceroute
     traceroute = []
