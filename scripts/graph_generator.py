@@ -15,11 +15,11 @@ HTML_DIR = "html"
 TRACEROUTE_DIR = "traceroute"
 LOG_LINES_DISPLAY = settings.get("log_lines_display", 50)
 
-# Load target list
+# Load targets
 with open("mtr_targets.yaml") as f:
     targets = yaml.safe_load(f)["targets"]
 
-# Helper to load and parse traceroute
+# Load traceroute into list of (hop, ip/host, latency)
 def load_traceroute(ip):
     path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     if not os.path.exists(path):
@@ -29,13 +29,16 @@ def load_traceroute(ip):
     with open(path) as f:
         for line in f:
             line = line.strip()
-            if line:
-                parts = line.split()
-                hop_str = " ".join(parts)
-                hops.append(hop_str)
+            if not line:
+                continue
+            parts = line.split(maxsplit=2)
+            hop_num = parts[0]
+            hop_host = parts[1] if len(parts) > 1 else "(unknown)"
+            latency = parts[2] if len(parts) > 2 else "(no latency)"
+            hops.append((hop_num, hop_host, latency))
     return hops
 
-# Helper to load logs
+# Load logs
 def load_logs(ip):
     path = os.path.join(LOG_DIR, f"{ip}.log")
     if not os.path.exists(path):
@@ -44,9 +47,9 @@ def load_logs(ip):
         lines = f.readlines()
         if not lines:
             return ["No log entries."]
-        return lines[-LOG_LINES_DISPLAY:][::-1]  # Newest first
+        return lines[-LOG_LINES_DISPLAY:][::-1]
 
-# Generate HTML per target
+# Generate HTML per IP
 def generate_html(ip, description):
     traceroute = load_traceroute(ip)
     logs = load_logs(ip)
@@ -74,14 +77,15 @@ def generate_html(ip, description):
     <p><strong>Last updated:</strong> {timestamp}</p>
 
     <div class="section">
-        <h3>Traceroute (Hop Path)</h3>
+        <h3>Traceroute (Hop Table)</h3>
         <table>
-            <tr><th>Hop</th><th>Details</th></tr>
+            <tr><th>Hop</th><th>IP / Host</th><th>Latency</th></tr>
 """)
-        for i, hop in enumerate(traceroute, 1):
-            f.write(f"<tr><td>{i}</td><td>{hop}</td></tr>\n")
-        if not traceroute:
-            f.write("<tr><td colspan='2'>No traceroute data found.</td></tr>\n")
+        if traceroute:
+            for hop_num, hop_host, latency in traceroute:
+                f.write(f"<tr><td>{hop_num}</td><td>{hop_host}</td><td>{latency}</td></tr>\n")
+        else:
+            f.write("<tr><td colspan='3'>No traceroute data found.</td></tr>\n")
 
         f.write(f"""</table>
         <p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>View raw traceroute file</a></p>
