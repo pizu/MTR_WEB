@@ -14,6 +14,7 @@ HTML_DIR = "html"
 # Load targets
 with open("mtr_targets.yaml") as f:
     targets = yaml.safe_load(f)["targets"]
+    print("Loaded targets:", targets)
 
 # Generate index.html
 index_path = os.path.join(HTML_DIR, "index.html")
