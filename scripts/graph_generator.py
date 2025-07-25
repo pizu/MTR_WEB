@@ -17,11 +17,11 @@ TRACEROUTE_DIR = settings.get("traceroute_directory", "traceroute")
 MAX_HOPS = settings.get("max_hops", 30)
 GRAPH_WIDTH = settings.get("graph_width", 800)
 GRAPH_HEIGHT = settings.get("graph_height", 200)
-TIME_RANGES = settings.get("graph_time_ranges", ["1h", "6h", "12h", "24h", "1w"])
+TIME_RANGES = settings.get("graph_time_ranges", [])
 
 os.makedirs(GRAPH_DIR, exist_ok=True)
 
-# Sanitize label for RRDTool
+# Sanitize label for RRDTool and file naming
 def sanitize_label(label):
     return re.sub(r'[:\\\'"]', '-', label)
 
@@ -67,9 +67,9 @@ def clean_old_graphs(ip, expected_pngs):
                     logger.warning(f"[SKIP CLEANUP] {fname}: {e}")
 
 # Generate one graph
-def generate_graph(ip, metric, timerange, hops):
+def generate_graph(ip, metric, timerange_label, timerange_seconds, hops):
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
-    png_filename = f"{ip}_{metric}_{timerange}.png"
+    png_filename = f"{ip}_{metric}_{timerange_label}.png"
     png_path = os.path.join(GRAPH_DIR, png_filename)
 
     if not os.path.exists(rrd_path):
@@ -89,26 +89,33 @@ def generate_graph(ip, metric, timerange, hops):
         lines.append(f"LINE1:{ds_name}#{color}:{safe_label}")
 
     cmd = defs + lines + [
-        f"--title={ip} - {metric.upper()} ({timerange})",
+        f"--title={ip} - {metric.upper()} ({timerange_label})",
         f"--width={GRAPH_WIDTH}",
         f"--height={GRAPH_HEIGHT}",
         "--slope-mode",
         "--end", "now",
-        f"--start=-{timerange}"
+        f"--start=-{timerange_seconds}"
     ]
 
     try:
         rrdtool.graph(png_path, *cmd)
         logger.info(f"[GRAPHED] {png_path}")
     except rrdtool.OperationalError as e:
-        logger.error(f"[ERROR] {ip} - {metric} ({timerange}): {e}")
+        logger.error(f"[ERROR] {ip} - {metric} ({timerange_label}): {e}")
 
 # Main process
-with open("mtr_targets.yaml") as f:
-    targets = yaml.safe_load(f)["targets"]
+try:
+    with open("mtr_targets.yaml") as f:
+        targets = yaml.safe_load(f).get("targets", [])
+except Exception as e:
+    logger.error(f"[ERROR] Failed to load mtr_targets.yaml: {e}")
+    targets = []
 
 for target in targets:
-    ip = target["ip"]
+    ip = target.get("ip")
+    if not ip:
+        continue
+
     hops = get_labels(ip)
     if not hops:
         logger.warning(f"[SKIP] No valid traceroute data for {ip}")
@@ -117,11 +124,16 @@ for target in targets:
     # Build expected graph filenames
     expected_pngs = []
     for metric in ["avg", "last", "best", "loss"]:
-        for rng in TIME_RANGES:
-            expected_pngs.append(f"{ip}_{metric}_{rng}.png")
+        for range_def in TIME_RANGES:
+            label = range_def.get("label")
+            if label:
+                expected_pngs.append(f"{ip}_{metric}_{label}.png")
 
     clean_old_graphs(ip, expected_pngs)
 
     for metric in ["avg", "last", "best", "loss"]:
-        for rng in TIME_RANGES:
-            generate_graph(ip, metric, rng, hops)
+        for range_def in TIME_RANGES:
+            label = range_def.get("label")
+            seconds = range_def.get("seconds")
+            if label and seconds:
+                generate_graph(ip, metric, label, seconds, hops)
