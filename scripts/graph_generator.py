@@ -128,6 +128,9 @@ for target in targets:
             label = range_def.get("label")
             if label:
                 expected_pngs.append(f"{ip}_{metric}_{label}.png")
+                for hop_index, _ in hops:
+                    expected_pngs.append(f"{ip}_hop{hop_index}_{metric}_{label}.png")
+
 
     clean_old_graphs(ip, expected_pngs)
 
@@ -137,3 +140,36 @@ for target in targets:
             seconds = range_def.get("seconds")
             if label and seconds:
                 generate_graph(ip, metric, label, seconds, hops)
+                
+                # Per-hop PNGs (one graph per hop)
+                for hop_index, raw_label in hops:
+                    ds_name = f"hop{hop_index}_{metric}"
+                    perhop_png = f"{ip}_hop{hop_index}_{metric}_{label}.png"
+                    png_path = os.path.join(GRAPH_DIR, perhop_png)
+
+                    if not os.path.exists(rrd_path):
+                        continue
+
+                    safe_label = sanitize_label(raw_label)
+                    color = get_color_by_hop(hop_index)
+
+                    cmd = [
+                        f"DEF:v={rrd_path}:{ds_name}:AVERAGE",
+                        f"LINE1:v#{color}:{safe_label}",
+                        f"--title={ip} - Hop {hop_index} {metric.upper()} ({label})",
+                        f"--width={GRAPH_WIDTH}",
+                        f"--height={GRAPH_HEIGHT}",
+                        "--slope-mode",
+                        "--end", "now",
+                        f"--start=-{seconds}"
+                    ]
+
+                    try:
+                        rrdtool.graph(png_path, *cmd)
+                        logger.info(f"[HOP GRAPH] {png_path}")
+                        expected_pngs.append(perhop_png)  # So it doesn't get deleted
+                    except rrdtool.OperationalError as e:
+                        if "No DS called" in str(e):
+                            logger.warning(f"[SKIP MISSING DS] {ds_name} in {ip}.rrd")
+                        else:
+                            logger.error(f"[ERROR] Failed hop graph: {ip} hop{hop_index} {metric} {label}: {e}")
