@@ -94,14 +94,18 @@ def generate_html(ip, description):
             if traceroute:
                 f.write("<h3>Traceroute</h3>")
                 f.write("<table><tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
-                for line in traceroute:
-                    parts = line.strip().split()
-                    if not parts:
+                for idx, line in enumerate(traceroute, 1):
+                    hop_raw = line.strip()
+                    if not hop_raw:
                         continue
-                    hop = parts[0]
-                    address = parts[1] if len(parts) > 1 else "-"
-                    detail = " ".join(parts[2:]) if len(parts) > 2 else "-"
-                    f.write(f"<tr><td>{hop}</td><td>{address}</td><td>{detail}</td></tr>")
+                        address = hop_raw
+                        if address == "???":
+                            address = "Request timed out"
+                            detail = "-"
+                        else:
+                            detail = "-"
+                            f.write(f"<tr><td>{idx}</td><td>{address}</td><td>{detail}</td></tr>")
+
                 f.write("</table>")
                 f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
             else:
