@@ -142,3 +142,23 @@ function setTimeRange(ip, range) {
 
 for target in targets:
     generate_html(target["ip"], target.get("description", ""))
+            logger.info(f"Generated HTML page for {ip}")
+    except Exception as e:
+        logger.exception(f"Failed to write HTML for {ip}: {e}")
+
+# Generate HTML for each target
+for target in targets:
+    ip = target.get("ip")
+    description = target.get("description", "")
+    generate_html(ip, description)
+
+# Cleanup stale HTML files (no longer in config)
+try:
+    all_html_files = [f for f in os.listdir(HTML_DIR) if f.endswith(".html") and f != "index.html"]
+    for f in all_html_files:
+        ip_from_file = f.replace(".html", "")
+        if ip_from_file not in target_ips:
+            os.remove(os.path.join(HTML_DIR, f))
+            logger.info(f"Removed stale HTML file: {f}")
+except Exception as e:
+    logger.warning(f"Failed to clean up stale HTML files: {e}")
