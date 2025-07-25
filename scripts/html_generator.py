@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import yaml
 from datetime import datetime
 from utils import load_settings, setup_logger
@@ -173,25 +174,23 @@ function filterLogs() {
             f.write("<details><summary style='cursor: pointer; font-weight: bold;'>Structured Table View</summary>")
             f.write("<table class='log-table' style='width:100%; border-collapse: collapse; font-family: monospace; font-size: 13px;'>")
             f.write("<thead><tr style='background-color:#333; color:white;'><th style='padding:5px;border:1px solid #ccc;'>Timestamp</th><th style='padding:5px;border:1px solid #ccc;'>Level</th><th style='padding:5px;border:1px solid #ccc;'>Message</th></tr></thead><tbody>")
-            if logs:
-                for line in logs:
-                    try:
-                        timestamp, rest = line.split(" [", 1)
-                        level, message = rest.split("] ", 1)
-                        level = level.strip()
-                        message = message.strip()
-                        row_color = {
-                            "ERROR": "color: red;",
-                            "WARNING": "color: orange;",
-                            "INFO": "color: lightgreen;"
-                        }.get(level, "color: white;")
-                        timestamp = timestamp.strip()
-                        message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                        f.write(f"<tr class='log-line'><td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td><td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td><td style='border:1px solid #ccc;padding:5px;'>{message}</td></tr>")
-                    except Exception:
-                        f.write(f"<tr class='log-line'><td colspan='3' style='border:1px solid #ccc;padding:5px;'>{line}</td></tr>")
-            else:
-                f.write("<tr><td colspan='3'>No logs available.</td></tr>")
+
+            log_pattern = re.compile(r"(?:\[(.*?)\]\s*)?(?:\[(.*?)\]\s*)?(.*)")
+            for line in logs:
+                match = log_pattern.match(line)
+                if match:
+                    timestamp = match.group(1) or ""
+                    level = match.group(2) or ""
+                    message = match.group(3).strip()
+                    row_color = {
+                        "ERROR": "color: red;",
+                        "WARNING": "color: orange;",
+                        "INFO": "color: lightgreen;"
+                    }.get(level, "color: white;")
+                    message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    f.write(f"<tr class='log-line'><td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td><td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td><td style='border:1px solid #ccc;padding:5px;'>{message}</td></tr>")
+                else:
+                    f.write(f"<tr class='log-line'><td colspan='3' style='border:1px solid #ccc;padding:5px;'>{line}</td></tr>")
             f.write("</tbody></table></details>")
 
             f.write("<hr><p><a href='index.html'>Back to index</a></p>")
