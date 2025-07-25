@@ -9,3 +9,4 @@ graph_output_directory: /opt/scripts/MTR_WEB/html/graphs/
 retention_days: 30
 max_hops: 30
 log_lines_to_show: 30
+trace_directory: /opt/scripts/MTR_WEB/traces
