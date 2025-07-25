@@ -1,87 +1,69 @@
-# index_generator.py
-#
-# Generates an index.html file linking to each per-target HTML report with basic status info.
-
+#!/usr/bin/env python3
 import os
 import yaml
 from datetime import datetime
 
-def load_targets():
-    with open("mtr_targets.yaml", "r") as f:
-        return yaml.safe_load(f)['targets']
+# Load settings
+with open("mtr_script_settings.yaml") as f:
+    settings = yaml.safe_load(f)
 
-def parse_last_seen(log_path):
-    try:
-        with open(log_path, "r") as f:
-            lines = f.readlines()
-        for line in reversed(lines):
-            if "Started monitoring" in line or "Packet loss" in line or "Hop change" in line:
-                ts = line.split()[0] + " " + line.split()[1]
-                return ts
-        return "No recent activity"
-    except Exception:
-        return "No log"
+LOG_DIR = settings.get("log_directory", "logs")
+HTML_DIR = "html"
 
-def get_status(log_path):
-    try:
-        with open(log_path, "r") as f:
-            lines = f.readlines()
-        for line in reversed(lines):
-            if "Packet loss" in line:
-                return "⚠️ Loss Detected"
-            if "Started monitoring" in line:
-                return "✅ OK"
-        return "❌ Unreachable"
-    except Exception:
-        return "❌ No Log"
+# Load targets
+with open("mtr_targets.yaml") as f:
+    targets = yaml.safe_load(f)["targets"]
 
-def generate_index_html(targets, output_path, log_dir):
-    with open(output_path, "w") as f:
-        f.write("""<!DOCTYPE html>
-<html>
+# Generate index.html
+index_path = os.path.join(HTML_DIR, "index.html")
+with open(index_path, "w") as f:
+    f.write("""<html>
 <head>
-    <title>MTR Monitoring Dashboard</title>
+    <meta charset='utf-8'>
+    <title>MTR Monitoring</title>
     <style>
-        body { font-family: Arial, sans-serif; padding: 20px; background: #f4f4f4; }
-        h1 { margin-bottom: 20px; }
-        .card {
-            background: white;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 15px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-        }
-        .card h2 { margin: 0 0 10px 0; }
-        .meta { font-size: 14px; color: #555; }
-        a { color: #007BFF; text-decoration: none; }
-        a:hover { text-decoration: underline; }
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f8f9fa; }
+        h2 { color: #333; }
+        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        th, td { border: 1px solid #ccc; padding: 12px 15px; text-align: left; }
+        th { background-color: #f0f0f0; }
+        tr:hover { background-color: #f5f5f5; }
+        td a { text-decoration: none; color: #007bff; }
+        td a:hover { text-decoration: underline; }
+        .footer { margin-top: 20px; font-size: 0.9em; color: #666; }
     </style>
 </head>
 <body>
-    <h1>MTR Monitoring Dashboard</h1>
-""")
-        for t in targets:
-            ip = t['ip']
-            log_path = os.path.join(log_dir, f"{ip}.log")
-            status = get_status(log_path)
-            last_seen = parse_last_seen(log_path)
-            f.write(f"""<div class="card">
-    <h2><a href="{ip}.html">{ip}</a></h2>
-    <div class="meta">Status: {status}</div>
-    <div class="meta">Last Seen: {last_seen}</div>
-</div>
+<h2>Monitored Targets</h2>
+<table>
+<tr><th>IP</th><th>Description</th><th>Status</th><th>Last Seen</th></tr>
 """)
 
-        f.write("""</body>
-</html>
-""")
+    for t in targets:
+        ip = t["ip"]
+        description = t.get("description", "")
+        log_path = os.path.join(LOG_DIR, f"{ip}.log")
 
-def main():
-    targets = load_targets()
-    config = yaml.safe_load(open("mtr_script_settings.yaml"))
-    log_dir = config['log_directory']
-    os.makedirs("html", exist_ok=True)
-    generate_index_html(targets, "html/index.html", log_dir)
+        status = "N/A"
+        last_seen = "Never"
+        if os.path.exists(log_path):
+            with open(log_path) as logf:
+                lines = [line.strip() for line in logf if "MTR RUN" in line]
+                if lines:
+                    last_line = lines[-1]
+                    last_seen = last_line.split("]")[0].strip("[")
+                    status = "Reachable"
 
-if __name__ == "__main__":
-    main()
+        f.write("<tr>")
+        f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
+        f.write(f"<td>{description}</td>")
+        f.write(f"<td>{status}</td>")
+        f.write(f"<td>{last_seen}</td>")
+        f.write("</tr>\n")
+
+    f.write(f"""</table>
+<div class='footer'>Generated at: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>
+</body>
+</html>""")
+
+print("[UPDATED with styling] index.html")
