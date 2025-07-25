@@ -28,7 +28,7 @@ with open("mtr_targets.yaml") as f:
 def sanitize_label(label):
     return re.sub(r'[:\\\'"]', '-', label)
 
-# Load traceroute labels from file
+# Load traceroute labels
 def get_labels(ip):
     path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
     if not os.path.exists(path):
@@ -48,7 +48,20 @@ def get_labels(ip):
                 hops.append(f"Hop {len(hops)+1} - unknown")
     return hops
 
-# Generate graph for given ip, metric, and time range
+# 🧹 Cleanup function to remove old PNGs for this IP
+def clean_old_graphs(ip):
+    removed = 0
+    for fname in os.listdir(GRAPH_DIR):
+        if fname.startswith(f"{ip}_") and fname.endswith(".png"):
+            try:
+                os.remove(os.path.join(GRAPH_DIR, fname))
+                removed += 1
+            except Exception as e:
+                logger.warning(f"[SKIP CLEANUP] Could not remove {fname}: {e}")
+    if removed > 0:
+        logger.info(f"[CLEANED] Removed {removed} old graphs for {ip}")
+
+# Generate a graph for one metric and time range
 def generate_graph(ip, metric, timerange):
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     png_path = os.path.join(GRAPH_DIR, f"{ip}_{metric}_{timerange}.png")
@@ -89,9 +102,10 @@ def generate_graph(ip, metric, timerange):
     except rrdtool.OperationalError as e:
         logger.error(f"[ERROR] {ip} - {metric} ({timerange}): {e}")
 
-# Main loop: generate all graphs
+# 🔁 Main loop with cleanup
 for target in targets:
     ip = target["ip"]
+    clean_old_graphs(ip)
     for metric in ["avg", "last", "best", "loss"]:
         for rng in TIME_RANGES:
             generate_graph(ip, metric, rng)
