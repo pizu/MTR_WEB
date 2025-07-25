@@ -153,7 +153,7 @@ function filterLogs() {
                 for i, label in enumerate(time_labels):
                     selected = "selected" if i == 0 else ""
                     f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
-                    f.write("</select>")
+                    f.write("</select>")  # close the <select>
                     
                     f.write("<div class='graph-grid'>")
                     for i, label in enumerate(time_labels):
@@ -164,7 +164,8 @@ function filterLogs() {
                             f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
                             f.write(f"<img src='graphs/{filename}' alt='{metric} summary {label}' loading='lazy'>")
                             f.write("</div>")
-                            f.write("</div>")  # End of graph-grid
+                            f.write("</div>")  # end graph-grid
+
                 f.write("</div></div></div>")
 
             f.write("<h3>Recent Logs</h3>")
