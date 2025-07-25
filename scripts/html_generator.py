@@ -93,7 +93,7 @@ def generate_html(ip, description):
         }
     }
 </script>
-""")
+"")
             f.write("</head><body>")
 
             f.write(f"<h2>{ip}</h2>")
@@ -101,7 +101,6 @@ def generate_html(ip, description):
                 f.write(f"<p><b>{description}</b></p>")
             f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
 
-            # Traceroute
             if traceroute:
                 f.write("<h3>Traceroute</h3>")
                 f.write("<table><tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
@@ -124,49 +123,39 @@ def generate_html(ip, description):
             else:
                 f.write("<p><i>No traceroute data available.</i></p>")
 
-            # Graphs
             f.write("<h3>Graphs</h3>")
             time_labels = [tr["label"] for tr in TIME_RANGES]
             for metric in ["avg", "last", "best", "loss"]:
                 section_id = f"section-{ip}-{metric}"
                 f.write(f"<div class='graph-section'>")
                 f.write(f"<div class='graph-header'><h4>{metric.upper()} Graphs</h4>")
-                f.write(f"<button onclick=\"toggleSection('{section_id}')\">Toggle</button></div>")
+                f.write(f"<button onclick="toggleSection('{section_id}')">Toggle</button></div>")
                 f.write(f"<div id='{section_id}' class=''>")
                 f.write(f"<label>Time Range: </label>")
-                f.write(f"<select onchange=\"switchGraph('{ip}', '{metric}', this.value)\">")
+                f.write(f"<select onchange="switchGraph('{ip}', '{metric}', this.value)">")
                 for i, label in enumerate(time_labels):
                     selected = "selected" if i == 0 else ""
                     f.write(f"<option value='{label}' {selected}>{label.upper()}</option>")
                 f.write("</select>")
-
                 f.write("<div class='graph-grid'>")
-                found_any = False
                 for i, label in enumerate(time_labels):
                     img_filename = f"{ip}_{metric}_{label}.png"
                     img_path = os.path.join(GRAPH_DIR, img_filename)
                     if os.path.exists(img_path):
-                        found_any = True
                         display = "block" if i == 0 else "none"
                         f.write(f"<div style='display:{display}' class='graph-img-{metric}-{ip}' data-range='{label}'>")
                         f.write(f"<img src='graphs/{img_filename}' alt='{metric} graph {label}' loading='lazy'>")
                         f.write("</div>")
-                    else:
-                        logger.debug(f"Graph not found: {img_path}")
-                if not found_any:
-                    f.write(f"<p>No graphs found for {metric.upper()}.</p>")
-                f.write("</div></div></div>")  # end grid + section
+                f.write("</div></div></div>")
 
             # Logs
             f.write("""
 <h3>Recent Logs</h3>
 <input type="text" id="logFilter" placeholder="Filter logs..." style="width:100%;margin-bottom:10px;padding:5px;" onkeyup="filterLogs()">
-
 <details open>
-<summary style="cursor: pointer; font-weight: bold;">View Recent Logs</summary>
+<summary style="cursor: pointer; font-weight: bold;">Raw Log View</summary>
 <div class="log-box">
 """)
-
             if logs:
                 for line in logs:
                     css_style = ""
@@ -182,8 +171,44 @@ def generate_html(ip, description):
                     f.write(f"<div class='log-line' style='{css_style}'>{safe_line}</div>\n")
             else:
                 f.write("<div class='log-line'>No logs available.</div>")
-
             f.write("</div></details>")
+            f.write("""
+<details>
+<summary style="cursor: pointer; font-weight: bold;">Structured Table View</summary>
+<table class="log-table" style="width:100%; border-collapse: collapse; font-family: monospace; font-size: 13px;">
+  <thead>
+    <tr style="background-color:#333; color:white;">
+      <th style="padding: 5px; border: 1px solid #ccc;">Timestamp</th>
+      <th style="padding: 5px; border: 1px solid #ccc;">Level</th>
+      <th style="padding: 5px; border: 1px solid #ccc;">Message</th>
+    </tr>
+  </thead>
+  <tbody>
+""")
+            if logs:
+                for line in logs:
+                    try:
+                        timestamp, rest = line.split(" [", 1)
+                        level, message = rest.split("] ", 1)
+                        level = level.strip()
+                        message = message.strip()
+                        row_color = {
+                            "ERROR": "color: red;",
+                            "WARNING": "color: orange;",
+                            "INFO": "color: lightgreen;"
+                        }.get(level, "color: white;")
+                        timestamp = timestamp.strip()
+                        message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        f.write(f"<tr class='log-line'>")
+                        f.write(f"<td style='border:1px solid #ccc;padding:5px;'>{timestamp}</td>")
+                        f.write(f"<td style='border:1px solid #ccc;padding:5px;{row_color}'>{level}</td>")
+                        f.write(f"<td style='border:1px solid #ccc;padding:5px;'>{message}</td>")
+                        f.write("</tr>\n")
+                    except Exception:
+                        f.write(f"<tr class='log-line'><td colspan='3' style='border:1px solid #ccc;padding:5px;'>{line}</td></tr>\n")
+            else:
+                f.write("<tr><td colspan='3'>No logs available.</td></tr>")
+            f.write("</tbody></table></details>")
 
             f.write("<hr><p><a href='index.html'>Back to index</a></p>")
             f.write("</body></html>")
