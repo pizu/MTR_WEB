@@ -11,3 +11,5 @@ max_hops: 30
 log_lines_to_show: 30
 trace_directory: /opt/scripts/MTR_WEB/traces
 enable_fping_check: true
+graph_width: 800
+graph_height: 200
