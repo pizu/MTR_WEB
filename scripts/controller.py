@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
+#
 # controller.py
 #
 # This script watches mtr_targets.yaml and manages child mtr_monitor.py processes per target.
-# When a target is added or removed, it starts or stops the monitor accordingly.
+# It starts/stops monitor processes based on target config changes.
 #
 # Usage: python3 controller.py
 # Ensure mtr_monitor.py and the YAML files are in place.
@@ -9,11 +11,10 @@
 import yaml
 import time
 import subprocess
-import os
-import signal
 import threading
 from utils import load_settings, setup_logger
 
+# Initialize settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("controller", log_directory, "controller.log")
@@ -26,65 +27,96 @@ MONITOR_SCRIPT = "scripts/mtr_monitor.py"
 monitored_targets = {}
 lock = threading.Lock()
 
-# Load YAML config
 def load_targets():
-    with open(CONFIG_FILE, 'r') as f:
-        return yaml.safe_load(f)['targets']
+    """
+    Load current targets from the mtr_targets.yaml file.
+    """
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            data = yaml.safe_load(f)
+            return data.get("targets", [])
+    except Exception as e:
+        logger.error(f"Failed to load targets: {e}")
+        return []
 
-# Load script settings
-def load_settings():
-    with open(SCRIPT_SETTINGS_FILE, 'r') as f:
-        return yaml.safe_load(f)
+def start_monitor(target):
+    """
+    Start the mtr_monitor.py script for a given target.
+    """
+    try:
+        args = [
+            "python3", MONITOR_SCRIPT,
+            "--target", target["ip"],
+            "--settings", SCRIPT_SETTINGS_FILE
+        ]
+        if target.get("source_ip"):
+            args += ["--source", target["source_ip"]]
 
-# Start a target monitor
-def start_monitor(target, settings):
-    args = [
-        "python3", MONITOR_SCRIPT,
-        "--target", target['ip'],
-        "--settings", SCRIPT_SETTINGS_FILE
-    ]
-    if target.get("source_ip"):
-        args += ["--source", target["source_ip"]]
-    proc = subprocess.Popen(args)
-    return proc
+        proc = subprocess.Popen(args)
+        logger.info(f"Started monitor for {target['ip']} (PID: {proc.pid})")
+        return proc
+    except Exception as e:
+        logger.error(f"Failed to start monitor for {target['ip']}: {e}")
+        return None
 
-# Stop all monitors
+def stop_monitor(ip):
+    """
+    Stop the monitoring process for a specific IP.
+    """
+    try:
+        with lock:
+            proc = monitored_targets.pop(ip, None)
+            if proc:
+                proc.terminate()
+                logger.info(f"Stopped monitor for {ip}")
+    except Exception as e:
+        logger.error(f"Failed to stop monitor for {ip}: {e}")
+
 def stop_all():
+    """
+    Stop all running monitor processes.
+    """
     with lock:
         for ip, proc in monitored_targets.items():
-            proc.terminate()
+            try:
+                proc.terminate()
+                logger.info(f"Terminated monitor for {ip}")
+            except Exception as e:
+                logger.error(f"Error terminating process for {ip}: {e}")
         monitored_targets.clear()
 
-# Watch the config file and manage targets
 def monitor_loop():
-    settings = load_settings()
+    """
+    Continuously watch the targets file and start/stop monitors as needed.
+    """
+    logger.info("Controller started. Watching targets...")
     current_targets = []
 
     while True:
         try:
             new_targets = load_targets()
-            new_ips = {t['ip'] for t in new_targets}
+            new_ips = {t["ip"] for t in new_targets}
             cur_ips = set(monitored_targets.keys())
 
-            # Start new targets
+            # Start new monitors
             for target in new_targets:
-                if target['ip'] not in cur_ips:
-                    print(f"Starting monitor for {target['ip']}")
-                    proc = start_monitor(target, settings)
-                    monitored_targets[target['ip']] = proc
+                ip = target["ip"]
+                if ip not in cur_ips:
+                    proc = start_monitor(target)
+                    if proc:
+                        monitored_targets[ip] = proc
 
-            # Stop removed targets
+            # Stop monitors for removed targets
             for ip in cur_ips - new_ips:
-                print(f"Stopping monitor for {ip}")
-                proc = monitored_targets.pop(ip)
-                proc.terminate()
+                stop_monitor(ip)
 
             time.sleep(10)
         except KeyboardInterrupt:
+            logger.info("Received KeyboardInterrupt. Shutting down...")
             stop_all()
             break
         except Exception as e:
-            print(f"Error in controller: {e}")
+            logger.error(f"Error in monitor loop: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":
