@@ -58,9 +58,15 @@ def generate_html(ip, description):
 
     try:
         with open(html_path, "w") as f:
-            f.write("<html><head><meta charset='utf-8'>")
-            f.write(f"<title>{ip}</title>")
-            f.write("""<style>
+            f.write("<html><head><meta charset='utf-8'>\n")
+            refresh_seconds = settings.get("html_auto_refresh_seconds", 0)
+            if refresh_seconds > 0:
+                f.write(f"<meta http-equiv='refresh' content='{refresh_seconds}'>\n")
+                logger.info(f"[{ip}] Auto-refresh enabled: {refresh_seconds} seconds")
+            else:
+                logger.info(f"[{ip}] Auto-refresh disabled")
+                f.write(f"<title>{ip}</title>\n")
+                f.write("""<style>
 body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
 h2 { margin-top: 0; }
 table { border-collapse: collapse; width: 100%; }
