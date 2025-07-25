@@ -92,6 +92,7 @@ def log_event(ip, message):
 
 # Save traceroute to text
 def save_trace(ip, hops):
+    os.makedirs("traceroute", exist_ok=True)
     path = os.path.join("traceroute", f"{ip}.trace.txt")
     with open(path, "w") as f:
         for hop in hops:
