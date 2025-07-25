@@ -70,6 +70,8 @@ def generate_html(ip, description):
     .graph-header { display: flex; justify-content: space-between; align-items: center; }
     .graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 10px; }
     .hidden { display: none; }
+    .log-box { max-height: 300px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; border-radius: 5px; font-family: monospace; font-size: 13px; }
+    .log-line { white-space: pre-wrap; }
 </style>
 <script>
     function toggleSection(id) {
@@ -81,6 +83,14 @@ def generate_html(ip, description):
         document.querySelectorAll(`.graph-img-${metric}-${ip}`).forEach(el => {
             el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
         });
+    }
+
+    function filterLogs() {
+        const input = document.getElementById('logFilter').value.toLowerCase();
+        const lines = document.getElementsByClassName('log-line');
+        for (const line of lines) {
+            line.style.display = line.innerText.toLowerCase().includes(input) ? '' : 'none';
+        }
     }
 </script>
 """)
@@ -148,13 +158,32 @@ def generate_html(ip, description):
                 f.write("</div></div></div>")  # end grid + section
 
             # Logs
-            f.write("<h3>Recent Logs</h3><pre>")
+            f.write("""
+<h3>Recent Logs</h3>
+<input type="text" id="logFilter" placeholder="Filter logs..." style="width:100%;margin-bottom:10px;padding:5px;" onkeyup="filterLogs()">
+
+<details open>
+<summary style="cursor: pointer; font-weight: bold;">View Recent Logs</summary>
+<div class="log-box">
+""")
+
             if logs:
                 for line in logs:
-                    f.write(f"{line}\n")
+                    css_style = ""
+                    if "ERROR" in line:
+                        css_style = "color: red;"
+                    elif "WARNING" in line:
+                        css_style = "color: orange;"
+                    elif "INFO" in line:
+                        css_style = "color: lightgreen;"
+                    else:
+                        css_style = "color: white;"
+                    safe_line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    f.write(f"<div class='log-line' style='{css_style}'>{safe_line}</div>\n")
             else:
-                f.write("No logs available.\n")
-            f.write("</pre>")
+                f.write("<div class='log-line'>No logs available.</div>")
+
+            f.write("</div></details>")
 
             f.write("<hr><p><a href='index.html'>Back to index</a></p>")
             f.write("</body></html>")
