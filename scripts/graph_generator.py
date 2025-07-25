@@ -2,10 +2,11 @@
 import os
 import yaml
 import rrdtool
+from utils import load_settings, setup_logger
 
-# Load settings
-with open("mtr_script_settings.yaml") as f:
-    settings = yaml.safe_load(f)
+settings = load_settings()
+log_directory = settings.get("log_directory", "/tmp")
+logger = setup_logger("graph_generator", log_directory, "graph_generator.log")
 
 RRD_DIR = settings.get("rrd_directory", "data")
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")

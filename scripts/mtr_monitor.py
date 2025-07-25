@@ -2,7 +2,6 @@
 import os
 import sys
 import time
-import yaml
 import json
 import rrdtool
 import subprocess
@@ -10,11 +9,11 @@ from datetime import datetime
 from pathlib import Path
 import argparse
 from deepdiff import DeepDiff
+from utils import load_settings, setup_logger
 
-# Load YAML settings
-def load_settings(path):
-    with open(path) as f:
-        return yaml.safe_load(f)
+settings = load_settings()
+log_directory = settings.get("log_directory", "/tmp")
+logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log")
 
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):

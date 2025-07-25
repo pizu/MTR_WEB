@@ -12,6 +12,11 @@ import subprocess
 import os
 import signal
 import threading
+from utils import load_settings, setup_logger
+
+settings = load_settings()
+log_directory = settings.get("log_directory", "/tmp")
+logger = setup_logger("controller", log_directory, "controller.log")
 
 CONFIG_FILE = "mtr_targets.yaml"
 SCRIPT_SETTINGS_FILE = "mtr_script_settings.yaml"
