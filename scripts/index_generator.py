@@ -12,6 +12,7 @@ logger = setup_logger("index_generator", log_directory, "index_generator.log")
 
 LOG_DIR = settings.get("log_directory", "logs")
 HTML_DIR = "html"
+ENABLE_FPING = settings.get("enable_fping_check", True)
 
 # Load targets from YAML
 try:
@@ -98,9 +99,10 @@ try:
             description = t.get("description", "")
             log_path = os.path.join(LOG_DIR, f"{ip}.log")
 
-            status = "N/A"
+            status = "Unknown"
             last_seen = "Never"
 
+            # Extract last seen time from log
             if os.path.exists(log_path):
                 try:
                     with open(log_path) as logf:
@@ -110,17 +112,19 @@ try:
                 except Exception as e:
                     logger.warning(f"Could not read log for {ip}: {e}")
 
-            # Check IP reachability using fping, fallback to Unreachable if any failure
-            try:
-                result = subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                status = "Reachable" if result.returncode == 0 else "Unreachable"
-            except FileNotFoundError:
-                logger.warning(f"fping command not found. Skipping reachability check for {ip}.")
-                status = "Unknown"
-            except Exception as e:
-                logger.warning(f"fping failed for {ip}: {e}")
-                status = "Unknown"
-
+            # Check reachability with fping
+            if ENABLE_FPING:
+                try:
+                    result = subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    status = "Reachable" if result.returncode == 0 else "Unreachable"
+                except FileNotFoundError:
+                    logger.warning(f"'fping' command not found. Skipping reachability check for {ip}.")
+                    status = "Unknown"
+                except Exception as e:
+                    logger.warning(f"fping failed for {ip}: {e}")
+                    status = "Unknown"
+            else:
+                logger.debug(f"fping check disabled in settings for {ip}")
 
             f.write("<tr>")
             f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
