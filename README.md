@@ -1,5 +1,3 @@
-# MTR_WEB
-
 # MTR Monitor System
 
 This is a modular, YAML-driven monitoring system using `mtr`, `rrdtool`, and static HTML reports. It is designed to continuously monitor multiple targets, record per-hop metrics, and present them in an HTML dashboard.
