@@ -207,7 +207,7 @@ function filterLogs() {
                         full_path = os.path.join(GRAPH_DIR, filename)
                         if os.path.exists(full_path):
                             display = "block" if i == 0 else "none"
-                            f.write(f"<div style='display:{display}' class='hop-graph-{ip}-{hop}-{metric}' data-range='{label}'>")
+                            f.write(f"<div style='display:{display}' class='hop-graph hop-graph-{ip}-{hop}' data-range='{label}'>")
                             f.write(f"<img src='graphs/{filename}' alt='Hop {hop} {metric} {label}' loading='lazy'>")
                             f.write("</div>")
                     f.write("</div>")  # end graph-grid
@@ -216,11 +216,14 @@ function filterLogs() {
             # JS to control hop graph switching
             f.write("""
 <script>
+function setGlobalTimeRange(ip, selected) {
+    document.querySelectorAll(`.graph-img-global-${ip}`).forEach(el => {
+        el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
+    });
+}
 function setHopTimeRange(ip, hop, selected) {
-    ['avg','last','best','loss'].forEach(metric => {
-        document.querySelectorAll(`.hop-graph-${ip}-${hop}-${metric}`).forEach(el => {
-            el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
-        });
+    document.querySelectorAll(`.hop-graph-${ip}-${hop}`).forEach(el => {
+        el.style.display = (el.dataset.range === selected) ? 'block' : 'none';
     });
 }
 </script>
