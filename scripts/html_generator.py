@@ -69,14 +69,27 @@ def generate_html(ip, description):
 
             f.write(f"<p><i>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i></p>")
 
+            # Traceroute table
             if traceroute:
-                f.write("<h3>Traceroute</h3><pre>")
-                for hop in traceroute:
-                    f.write(f"{hop}\n")
-                f.write("</pre>")
+                f.write("<h3>Traceroute</h3>")
+                f.write("<table border='1' cellspacing='0' cellpadding='5'>")
+                f.write("<tr><th>Hop</th><th>Address / Hostname</th><th>Details</th></tr>")
+                for line in traceroute:
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    hop = parts[0]
+                    address = parts[1] if len(parts) > 1 else "-"
+                    detail = " ".join(parts[2:]) if len(parts) > 2 else "-"
+                    f.write(f"<tr><td>{hop}</td><td>{address}</td><td>{detail}</td></tr>")
+                f.write("</table>")
+
+                # Link to raw trace file
+                f.write(f"<p><a href='../{TRACEROUTE_DIR}/{ip}.trace.txt' target='_blank'>Download traceroute text</a></p>")
             else:
                 f.write("<p><i>No traceroute data available.</i></p>")
 
+            # Graphs
             f.write("<h3>Graphs (Last 24h)</h3>")
             for metric in ["avg", "last", "best", "loss"]:
                 graph_file = os.path.join(GRAPH_DIR, f"{ip}_{metric}.png")
@@ -86,6 +99,7 @@ def generate_html(ip, description):
                 else:
                     logger.debug(f"Graph not found: {graph_file}")
 
+            # Logs
             f.write("<h3>Recent Logs</h3><pre>")
             if logs:
                 for line in logs:
@@ -100,13 +114,13 @@ def generate_html(ip, description):
     except Exception as e:
         logger.exception(f"Failed to write HTML for {ip}: {e}")
 
-# Generate per-target HTML pages
+# Generate HTML per target
 for target in targets:
     ip = target["ip"]
     desc = target.get("description", "")
     generate_html(ip, desc)
 
-# Optional: Clean up orphaned .html files
+# Cleanup orphan .html files
 try:
     all_html_files = [f for f in os.listdir(HTML_DIR) if f.endswith(".html") and f != "index.html"]
     for f in all_html_files:
