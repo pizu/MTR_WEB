@@ -100,11 +100,14 @@ def run_mtr(target, source_ip=None):
 def save_trace_and_json(ip, hops):
     os.makedirs(traceroute_dir, exist_ok=True)
 
-    # Save plain text trace
+    # Save plain text trace with hop number, IP, latency
     txt_path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
     with open(txt_path, "w") as f:
         for hop in hops:
-            f.write(f"{hop.get('host', '???')}\n")
+            hop_num = hop.get("count", "?")
+            ip_addr = hop.get("host", "?")
+            latency = hop.get("Avg", "U")
+            f.write(f"{hop_num} {ip_addr} {latency} ms\n")
     logger.info(f"Saved traceroute to {txt_path}")
 
     # Save JSON hop label map
