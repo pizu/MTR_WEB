@@ -12,6 +12,7 @@ log_lines_to_show: 30
 trace_directory: /opt/scripts/MTR_WEB/traces
 enable_fping_check: true
 html_auto_refresh_seconds: 60
+fping_path: /usr/sbin/fping
 graph_width: 600
 graph_height: 200
 graph_time_ranges:
