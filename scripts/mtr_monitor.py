@@ -67,17 +67,30 @@ def update_rrd(rrd_path, hops, ip, debug_log=None):
 def init_rrd(rrd_path):
     if os.path.exists(rrd_path):
         return
+
+    rrd_config = settings.get("rrd", {})
+    step = rrd_config.get("step", 60)
+    heartbeat = rrd_config.get("heartbeat", 120)
+    ds_schema = rrd_config.get("data_sources", [])
+    rra_schema = rrd_config.get("rras", [])
+
     data_sources = []
     for i in range(0, max_hops + 1):
-        for metric in ["avg", "last", "best", "loss"]:
-            data_sources.append(f"DS:hop{i}_{metric}:GAUGE:120:0:1000000")
+        for ds in ds_schema:
+            name = f"hop{i}_{ds['name']}"
+            data_sources.append(f"DS:{name}:{ds['type']}:{heartbeat}:{ds['min']}:{ds['max']}")
+
+    rras = []
+    for rra in rra_schema:
+        rras.append(f"RRA:{rra['cf']}:{rra['xff']}:{rra['step']}:{rra['rows']}")
+
     rrdtool.create(
         rrd_path,
-        "--step", str(interval),
+        "--step", str(step),
         *data_sources,
-        "RRA:AVERAGE:0.5:1:1440"
+        *rras
     )
-    logger.info(f"Initialized RRD at {rrd_path}")
+    logger.info(f"[{rrd_path}] RRD created with dynamic schema from settings.")
 
 # Parse MTR JSON output (ignores hostname)
 def parse_mtr_output(output):
