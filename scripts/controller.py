@@ -17,7 +17,7 @@ from utils import load_settings, setup_logger
 # Initialize settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("controller", log_directory, "controller.log")
+logger = setup_logger("controller", settings.get("log_directory", "/tmp"), "controller.log", settings=settings)
 
 CONFIG_FILE = "mtr_targets.yaml"
 SCRIPT_SETTINGS_FILE = "mtr_script_settings.yaml"
