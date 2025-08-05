@@ -80,16 +80,9 @@ def init_rrd(rrd_path):
             name = f"hop{i}_{ds['name']}"
             data_sources.append(f"DS:{name}:{ds['type']}:{heartbeat}:{ds['min']}:{ds['max']}")
 
-    rras = []
-    for rra in rra_schema:
-        rras.append(f"RRA:{rra['cf']}:{rra['xff']}:{rra['step']}:{rra['rows']}")
+    rras = [f"RRA:{r['cf']}:{r['xff']}:{r['step']}:{r['rows']}" for r in rra_schema]
 
-    rrdtool.create(
-        rrd_path,
-        "--step", str(step),
-        *data_sources,
-        *rras
-    )
+    rrdtool.create(rrd_path, "--step", str(step), *data_sources, *rras)
     logger.info(f"[{rrd_path}] RRD created with dynamic schema from settings.")
 
 # Parse MTR JSON output (ignores hostname)
