@@ -58,11 +58,16 @@ rrd:
   #Calc Part 2: 604800 / 300 = 2016
   
   rras:
+    - cf: AVERAGE
+      xff: 0.5
+      step: 1       # 1x base step (60s)
+      rows: 1440    # 1 day of 60s data
+
     # 1-minute resolution for 1 day
     - cf: AVERAGE
       xff: 0.5
       step: 1           # 1 × 60s = 1min
-    rows: 1440        # 1 day (24h × 60min)
+      rows: 1440        # 1 day (24h × 60min)
 
     # 5-minute resolution for 7 days
     - cf: AVERAGE
