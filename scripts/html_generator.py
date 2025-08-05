@@ -2,7 +2,7 @@
 import os
 import yaml
 from utils import load_settings, setup_logger
-from html_builder import generate_target_html
+from html_builder import generate_target_html, generate_per_hop_html
 from graph_utils import get_available_hops
 
 # Load settings and logger
@@ -29,6 +29,7 @@ for target in targets:
     description = target.get("description", "")
     hops = get_available_hops(ip)
     generate_target_html(ip, description, hops)
+    generate_per_hop_html(ip, hops, description)
 
 # Clean old files
 try:
