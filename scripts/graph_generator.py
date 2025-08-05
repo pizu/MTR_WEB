@@ -9,7 +9,7 @@ from utils import load_settings, setup_logger
 # Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("graph_generator", settings.get("log_directory", "/tmp"), "graph_generator.log", settings=settings)
+logger = setup_logger("graph_generator", log_directory, "graph_generator.log", settings=settings)
 
 RRD_DIR = settings.get("rrd_directory", "data")
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
@@ -18,6 +18,7 @@ MAX_HOPS = settings.get("max_hops", 30)
 GRAPH_WIDTH = settings.get("graph_width", 800)
 GRAPH_HEIGHT = settings.get("graph_height", 200)
 TIME_RANGES = settings.get("graph_time_ranges", [])
+DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
 os.makedirs(GRAPH_DIR, exist_ok=True)
 
@@ -66,7 +67,7 @@ def clean_old_graphs(ip, expected_pngs):
                 except Exception as e:
                     logger.warning(f"[SKIP CLEANUP] {fname}: {e}")
 
-# Generate one graph
+# Generate one summary graph
 def generate_graph(ip, metric, timerange_label, timerange_seconds, hops):
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     png_filename = f"{ip}_{metric}_{timerange_label}.png"
@@ -103,7 +104,7 @@ def generate_graph(ip, metric, timerange_label, timerange_seconds, hops):
     except rrdtool.OperationalError as e:
         logger.error(f"[ERROR] {ip} - {metric} ({timerange_label}): {e}")
 
-# Main process
+# Main
 try:
     with open("mtr_targets.yaml") as f:
         targets = yaml.safe_load(f).get("targets", [])
@@ -125,7 +126,7 @@ for target in targets:
 
     # Build expected graph filenames
     expected_pngs = []
-    for metric in ["avg", "last", "best", "loss"]:
+    for metric in DATA_SOURCES:
         for range_def in TIME_RANGES:
             label = range_def.get("label")
             if label:
@@ -133,22 +134,20 @@ for target in targets:
                 for hop_index, _ in hops:
                     expected_pngs.append(f"{ip}_hop{hop_index}_{metric}_{label}.png")
 
-
     clean_old_graphs(ip, expected_pngs)
 
-    for metric in ["avg", "last", "best", "loss"]:
+    for metric in DATA_SOURCES:
         for range_def in TIME_RANGES:
             label = range_def.get("label")
             seconds = range_def.get("seconds")
             if label and seconds:
                 generate_graph(ip, metric, label, seconds, hops)
-                
-                # Per-hop PNGs (one graph per hop)
+
+                # Per-hop graph for each hop/metric
                 for hop_index, raw_label in hops:
                     ds_name = f"hop{hop_index}_{metric}"
                     perhop_png = f"{ip}_hop{hop_index}_{metric}_{label}.png"
                     png_path = os.path.join(GRAPH_DIR, perhop_png)
-
 
                     safe_label = sanitize_label(raw_label)
                     color = get_color_by_hop(hop_index)
@@ -156,11 +155,11 @@ for target in targets:
                     cmd = [
                         f"DEF:v={rrd_path}:{ds_name}:AVERAGE",
                         f"LINE1:v#{color}:{safe_label}",
-        f\"GPRINT:v:LAST:Last\: %.1lf\",
-        f\"GPRINT:v:MAX:Max\: %.1lf\",
-        f\"GPRINT:v:AVERAGE:Avg\: %.1lf\",
-        f\"--units-exponent\", \"0\",
-        f\"--vertical-label\", \"Latency (ms)\" if metric != \"loss\" else \"Loss (%)\",
+                        f"GPRINT:v:LAST:Last\\: %.1lf",
+                        f"GPRINT:v:MAX:Max\\: %.1lf",
+                        f"GPRINT:v:AVERAGE:Avg\\: %.1lf",
+                        "--units-exponent", "0",
+                        "--vertical-label", "Latency (ms)" if metric != "loss" else "Loss (%)",
                         f"--title={ip} - Hop {hop_index} {metric.upper()} ({label})",
                         f"--width={GRAPH_WIDTH}",
                         f"--height={GRAPH_HEIGHT}",
@@ -172,7 +171,7 @@ for target in targets:
                     try:
                         rrdtool.graph(png_path, *cmd)
                         logger.info(f"[HOP GRAPH] {png_path}")
-                        expected_pngs.append(perhop_png)  # So it doesn't get deleted
+                        expected_pngs.append(perhop_png)
                     except rrdtool.OperationalError as e:
                         if "No DS called" in str(e):
                             logger.warning(f"[SKIP MISSING DS] {ds_name} in {ip}.rrd")
