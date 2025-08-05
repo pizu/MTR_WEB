@@ -9,7 +9,7 @@ from utils import load_settings, setup_logger
 # Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("graph_generator", log_directory, "graph_generator.log")
+logger = setup_logger("graph_generator", settings.get("log_directory", "/tmp"), "graph_generator.log", settings=settings)
 
 RRD_DIR = settings.get("rrd_directory", "data")
 GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
