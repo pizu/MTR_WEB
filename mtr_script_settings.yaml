@@ -5,6 +5,15 @@
 # === Logging ===
 log_directory: /opt/scripts/MTR_WEB/logs/
 
+# Per-script log levels (used by setup_logger)
+logging_levels:
+  controller: INFO
+  mtr_monitor: DEBUG
+  graph_generator: INFO
+  html_generator: INFO
+  html_builder: INFO
+  index_generator: INFO
+
 # === RRD and Graphing ===
 rrd_directory: /opt/scripts/MTR_WEB/data/
 graph_output_directory: /opt/scripts/MTR_WEB/html/graphs/
@@ -12,10 +21,9 @@ max_hops: 30
 graph_width: 800
 graph_height: 200
 
-# Define the structure of RRD files
 rrd:
-  step: 60               # One data point per minute
-  heartbeat: 120         # Accept data if within 120s
+  step: 60
+  heartbeat: 120
   data_sources:
     - name: avg
       type: GAUGE
@@ -37,23 +45,23 @@ rrd:
     - cf: AVERAGE
       xff: 0.5
       step: 1
-      rows: 43200      # 30 days of 60s data
+      rows: 43200
     - cf: AVERAGE
       xff: 0.5
       step: 5
-      rows: 51840      # 180 days of 5-min averages
+      rows: 51840
     - cf: AVERAGE
       xff: 0.5
       step: 30
-      rows: 52560      # ~3 years of 30-min averages
+      rows: 52560
 
 # === Traceroute ===
 traceroute_directory: /opt/scripts/MTR_WEB/traces/
 
-# === Monitoring Interval ===
+# === Monitoring ===
 interval_seconds: 60
 
-# === HTML Display Settings ===
+# === HTML Settings ===
 html_auto_refresh_seconds: 0
 log_lines_display: 50
 
@@ -67,7 +75,7 @@ graph_time_ranges:
   - label: "24h"
     seconds: 86400
 
-# === Cleanup Retention (in days) ===
+# === Cleanup Retention ===
 retention:
   rrd_days: 30
   logs_days: 60
@@ -75,10 +83,10 @@ retention:
   graphs_days: 7
   html_days: 10
 
-# === Optional FPing Status in index.html ===
+# === Optional FPing in index.html ===
 enable_fping_check: true
 
-# === Alerting (future) ===
+# === Alerting (Not yet implemented) ===
 # alert_email_to: "alerts@example.com"
 # loss_threshold: 50
 # debounce_seconds: 300
