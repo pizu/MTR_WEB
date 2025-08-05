@@ -21,39 +21,51 @@ max_hops: 30
 graph_width: 800
 graph_height: 200
 
+
+#step and rows determine how long your data is retained.
+#You can mix different cf functions (e.g. MAX to highlight spikes).
+#When updating this config:
+#It only affects newly created RRDs.
+#Existing .rrd files must be deleted and recreated to apply new RRA settings (or use rrdtool tune but that's more advanced and limited).
+
 rrd:
-  step: 60
-  heartbeat: 120
+  step: 60         # every 60 seconds a new sample
+  heartbeat: 120   # max expected interval between samples
   data_sources:
     - name: avg
       type: GAUGE
       min: 0
-      max: U
+      max: 1000
     - name: last
       type: GAUGE
       min: 0
-      max: U
+      max: 1000
     - name: best
       type: GAUGE
       min: 0
-      max: U
+      max: 1000
     - name: loss
       type: GAUGE
       min: 0
       max: 100
+
   rras:
     - cf: AVERAGE
       xff: 0.5
-      step: 1
-      rows: 43200
+      step: 1         # 1 PDP (every minute)
+      rows: 1440      # store 24 hours of 1-minute data
     - cf: AVERAGE
       xff: 0.5
-      step: 5
-      rows: 51840
+      step: 5         # 5 minutes
+      rows: 2016      # ~1 week of 5-min averages
     - cf: AVERAGE
+      xff: 0.5
+      step: 30        # 30 minutes
+      rows: 1440      # ~1 month of 30-min data
+    - cf: MAX
       xff: 0.5
       step: 30
-      rows: 52560
+      rows: 1440
 
 # === Traceroute ===
 traceroute_directory: /opt/scripts/MTR_WEB/traces/
