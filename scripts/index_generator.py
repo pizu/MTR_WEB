@@ -9,7 +9,7 @@ from utils import load_settings, setup_logger
 # Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("index_generator", log_directory, "index_generator.log")
+logger = setup_logger("index_generator", settings.get("log_directory", "/tmp"), "index_generator.log", settings=settings)
 
 LOG_DIR = settings.get("log_directory", "logs")
 HTML_DIR = "html"
