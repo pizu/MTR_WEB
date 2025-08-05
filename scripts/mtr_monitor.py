@@ -85,6 +85,30 @@ def init_rrd(rrd_path):
     rrdtool.create(rrd_path, "--step", str(step), *data_sources, *rras)
     logger.info(f"[{rrd_path}] RRD created with dynamic schema from settings.")
 
+def init_per_hop_rrds(ip):
+    rrd_config = settings.get("rrd", {})
+    step = rrd_config.get("step", 60)
+    heartbeat = rrd_config.get("heartbeat", 120)
+    ds_schema = rrd_config.get("data_sources", [])
+    rra_schema = rrd_config.get("rras", [])
+
+    os.makedirs(rrd_dir, exist_ok=True)
+
+    for hop in range(max_hops + 1):
+        hop_rrd_path = os.path.join(rrd_dir, f"{ip}_hop{hop}.rrd")
+        if os.path.exists(hop_rrd_path):
+            continue
+
+        data_sources = []
+        for ds in ds_schema:
+            name = ds["name"]
+            data_sources.append(f"DS:{name}:{ds['type']}:{heartbeat}:{ds['min']}:{ds['max']}")
+
+        rras = [f"RRA:{r['cf']}:{r['xff']}:{r['step']}:{r['rows']}" for r in rra_schema]
+
+        rrdtool.create(hop_rrd_path, "--step", str(step), *data_sources, *rras)
+        logger.info(f"[{hop_rrd_path}] Per-hop RRD created.")
+
 # Parse MTR JSON output (ignores hostname)
 def parse_mtr_output(output):
     try:
@@ -147,6 +171,7 @@ def monitor_target(ip, source_ip=None):
     os.makedirs(rrd_dir, exist_ok=True)
     rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
     init_rrd(rrd_path)
+    init_per_hop_rrds(ip)
     
     debug_rrd_log = os.path.join(log_directory, "rrd_debug.log")
 
