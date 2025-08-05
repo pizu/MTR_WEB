@@ -3,9 +3,10 @@ import os
 import yaml
 import subprocess
 from datetime import datetime
+from shutil import which
 from utils import load_settings, setup_logger
 
-# Load settings and initialize logger
+# Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("index_generator", log_directory, "index_generator.log")
@@ -14,6 +15,14 @@ LOG_DIR = settings.get("log_directory", "logs")
 HTML_DIR = "html"
 ENABLE_FPING = settings.get("enable_fping_check", True)
 REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
+FPING_PATH = settings.get("fping_path", which("fping"))
+
+# Validate fping availability
+if ENABLE_FPING and not FPING_PATH:
+    logger.warning("'fping' not found. Please configure 'fping_path' in YAML or install it.")
+    ENABLE_FPING = False
+else:
+    logger.info(f"Using fping from: {FPING_PATH}")
 
 # Load targets from YAML
 try:
@@ -108,7 +117,7 @@ try:
             status = "Unknown"
             last_seen = "Never"
 
-            # Extract last seen time from log
+            # Extract last seen from log
             if os.path.exists(log_path):
                 try:
                     with open(log_path) as logf:
@@ -119,21 +128,22 @@ try:
                 except Exception as e:
                     logger.warning(f"Could not read log for {ip}: {e}")
 
-            # Check reachability with fping
+            # Use fping
             if ENABLE_FPING:
                 try:
-                    result = subprocess.run(["fping", "-c1", "-t500", ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    result = subprocess.run(
+                        [FPING_PATH, "-c1", "-t500", ip],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                     status = "Reachable" if result.returncode == 0 else "Unreachable"
-                except FileNotFoundError:
-                    logger.warning(f"'fping' command not found. Skipping reachability check for {ip}.")
-                    status = "Unknown"
                 except Exception as e:
                     logger.warning(f"fping failed for {ip}: {e}")
                     status = "Unknown"
             else:
                 logger.debug(f"fping check disabled in settings for {ip}")
 
-            # Output row
+            # Write row
             f.write("<tr>")
             f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
             f.write(f"<td>{description}</td>")
