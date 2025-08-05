@@ -29,8 +29,8 @@ logger = setup_logger("mtr_monitor", settings.get("log_directory", "/tmp"), "mtr
 
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):
-    logger.debug(f"[{ip}] RRD Update values (first 8): {values[:8]}")
-    values = []
+    values = []  # <-- Moved up here to ensure it's defined
+
     for i in range(0, max_hops + 1):
         hop = next((h for h in hops if h.get("count") == i), {})
         try:
@@ -59,6 +59,8 @@ def update_rrd(rrd_path, hops, ip, debug_log=None):
         rrdtool.update(rrd_path, update_str)
     except rrdtool.OperationalError as e:
         logger.error(f"[RRD ERROR] {e}")
+
+    logger.debug(f"[{ip}] RRD Update values (first 8): {values[:8]}")
 
     if debug_log:
         with open(debug_log, "a") as f:
