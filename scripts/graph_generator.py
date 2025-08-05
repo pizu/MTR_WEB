@@ -92,9 +92,7 @@ def generate_graph(ip, metric, timerange_label, timerange_seconds, hops):
         f"--title={ip} - {metric.upper()} ({timerange_label})",
         f"--width={GRAPH_WIDTH}",
         f"--height={GRAPH_HEIGHT}",
-        "--slope-mode
-        --units-exponent 0
-        --vertical-label='Latency (ms)'",
+        "--slope-mode",
         "--end", "now",
         f"--start=-{timerange_seconds}"
     ]
@@ -144,7 +142,6 @@ for target in targets:
             seconds = range_def.get("seconds")
             if label and seconds:
                 generate_graph(ip, metric, label, seconds, hops)
-                if metric != 'loss' else generate_graph(ip, metric, label, seconds, hops).replace('Latency (ms)', 'Loss (%)')
                 
                 # Per-hop PNGs (one graph per hop)
                 for hop_index, raw_label in hops:
@@ -159,12 +156,15 @@ for target in targets:
                     cmd = [
                         f"DEF:v={rrd_path}:{ds_name}:AVERAGE",
                         f"LINE1:v#{color}:{safe_label}",
+        f\"GPRINT:v:LAST:Last\: %.1lf\",
+        f\"GPRINT:v:MAX:Max\: %.1lf\",
+        f\"GPRINT:v:AVERAGE:Avg\: %.1lf\",
+        f\"--units-exponent\", \"0\",
+        f\"--vertical-label\", \"Latency (ms)\" if metric != \"loss\" else \"Loss (%)\",
                         f"--title={ip} - Hop {hop_index} {metric.upper()} ({label})",
                         f"--width={GRAPH_WIDTH}",
                         f"--height={GRAPH_HEIGHT}",
-                        "--slope-mode
-        --units-exponent 0
-        --vertical-label='Latency (ms)'",
+                        "--slope-mode",
                         "--end", "now",
                         f"--start=-{seconds}"
                     ]
