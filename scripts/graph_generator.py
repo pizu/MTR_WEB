@@ -92,7 +92,9 @@ def generate_graph(ip, metric, timerange_label, timerange_seconds, hops):
         f"--title={ip} - {metric.upper()} ({timerange_label})",
         f"--width={GRAPH_WIDTH}",
         f"--height={GRAPH_HEIGHT}",
-        "--slope-mode",
+        "--slope-mode
+        --units-exponent 0
+        --vertical-label='Latency (ms)'",
         "--end", "now",
         f"--start=-{timerange_seconds}"
     ]
@@ -142,6 +144,7 @@ for target in targets:
             seconds = range_def.get("seconds")
             if label and seconds:
                 generate_graph(ip, metric, label, seconds, hops)
+                if metric != 'loss' else generate_graph(ip, metric, label, seconds, hops).replace('Latency (ms)', 'Loss (%)')
                 
                 # Per-hop PNGs (one graph per hop)
                 for hop_index, raw_label in hops:
@@ -159,7 +162,9 @@ for target in targets:
                         f"--title={ip} - Hop {hop_index} {metric.upper()} ({label})",
                         f"--width={GRAPH_WIDTH}",
                         f"--height={GRAPH_HEIGHT}",
-                        "--slope-mode",
+                        "--slope-mode
+        --units-exponent 0
+        --vertical-label='Latency (ms)'",
                         "--end", "now",
                         f"--start=-{seconds}"
                     ]
