@@ -2,7 +2,7 @@
 import os
 import yaml
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime
 from shutil import which
 import rrdtool
 from utils import load_settings, setup_logger
@@ -79,7 +79,7 @@ def get_rrd_metrics(ip):
             if not vals:
                 continue
             if metric == "loss":
-                avg_metrics[metric] = round(sum(vals), 1)  # total %
+                avg_metrics[metric] = round(sum(vals), 1)  # total % loss
             else:
                 avg_metrics[metric] = round(sum(vals) / len(vals), 1)
 
@@ -199,7 +199,7 @@ try:
             f.write(f"<td>{status}</td>")
             f.write(f"<td>{last_seen}</td>")
             f.write(f"<td>{fmt_metrics(hop0_metrics)}</td>")
-            f.write(f"<td>{fmt_metrics(avg_metrics)}</td>")
+            f.write(f"<td title='Aggregated across all hops'>{fmt_metrics(avg_metrics)}</td>")
             f.write("</tr>\n")
 
         f.write(f"""</table>
