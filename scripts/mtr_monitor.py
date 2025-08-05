@@ -115,8 +115,9 @@ def parse_mtr_output(output):
     try:
         raw = json.loads(output)
         hops = raw["report"].get("hubs", [])
-        for hop in hops:
-            hop["host"] = hop.get("host", f"hop{hop['count']}")
+        for i, hop in enumerate(hops):
+            hop["count"] = i  # Shift so first hop is hop0
+            hop["host"] = hop.get("host", f"hop{i}")
         return hops
     except Exception as e:
         logger.error(f"[PARSE ERROR] {e}")
