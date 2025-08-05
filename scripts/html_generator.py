@@ -8,7 +8,7 @@ from graph_utils import get_available_hops
 # Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("html_generator", log_directory, "html_generator.log")
+logger = setup_logger("html_generator", settings.get("log_directory", "/tmp"), "html_generator.log", settings=settings)
 
 HTML_DIR = "html"
 
