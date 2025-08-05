@@ -24,3 +24,5 @@ graph_time_ranges:
     seconds: 43200
   - label: "24h"
     seconds: 86400
+  - label: "1W"
+    seconds: 604800
