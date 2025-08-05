@@ -14,6 +14,12 @@ loss_threshold: 10                                 # % packet loss to trigger al
 debounce_seconds: 300                              # Time to suppress repeated alerts
 retention_days: 30                                 # (Optional) How long to keep old RRD/log data
 log_lines_display: 100                             # How many log lines to show on HTML per target
+logging_levels:                                     # Per-script log levels (optional)
+  controller: INFO
+  mtr_monitor: DEBUG
+  graph_generator: WARNING
+  html_generator: INFO
+  index_generator: INFO
 """
 
 import os
@@ -26,15 +32,43 @@ def load_settings(settings_path=None):
     with open(settings_path, 'r') as f:
         return yaml.safe_load(f)
 
-def setup_logger(name, log_directory, log_filename):
+def setup_logger(name, log_directory, log_filename, settings=None, default_level="INFO"):
+    """
+    Sets up a logger with file and console handlers and a per-script level.
+
+    :param name: Logger name (e.g. "controller", "mtr_monitor")
+    :param log_directory: Directory for log files
+    :param log_filename: Log filename (e.g. controller.log)
+    :param settings: Full settings dict, used to extract per-script level
+    :param default_level: Fallback log level
+    :return: Logger object
+    """
     os.makedirs(log_directory, exist_ok=True)
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
 
-    log_path = os.path.join(log_directory, log_filename)
-    if not logger.handlers:
-        handler = logging.FileHandler(log_path)
-        handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-        logger.addHandler(handler)
+    # Prevent duplicate handlers if reused
+    if logger.hasHandlers():
+        return logger
+
+    # Determine log level
+    level_str = default_level
+    if settings and "logging_levels" in settings:
+        level_str = settings["logging_levels"].get(name, default_level)
+    log_level = getattr(logging, level_str.upper(), logging.INFO)
+    logger.setLevel(log_level)
+
+    # Formatter
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+
+    # File handler
+    file_path = os.path.join(log_directory, log_filename)
+    file_handler = logging.FileHandler(file_path)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
     return logger
