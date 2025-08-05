@@ -2,29 +2,61 @@
 #
 # General settings for MTR monitor script
 
-# Global logging
+# === Logging ===
 log_directory: /opt/scripts/MTR_WEB/logs/
 
-# RRD and graphing
+# === RRD and Graphing ===
 rrd_directory: /opt/scripts/MTR_WEB/data/
 graph_output_directory: /opt/scripts/MTR_WEB/html/graphs/
 max_hops: 30
 graph_width: 800
 graph_height: 200
 
-# Traceroute data
-trace_directory: /opt/scripts/MTR_WEB/traces/
+# Define the structure of RRD files
+rrd:
+  step: 60               # One data point per minute
+  heartbeat: 120         # Accept data if within 120s
+  data_sources:
+    - name: avg
+      type: GAUGE
+      min: 0
+      max: U
+    - name: last
+      type: GAUGE
+      min: 0
+      max: U
+    - name: best
+      type: GAUGE
+      min: 0
+      max: U
+    - name: loss
+      type: GAUGE
+      min: 0
+      max: 100
+  rras:
+    - cf: AVERAGE
+      xff: 0.5
+      step: 1
+      rows: 43200      # 30 days of 60s data
+    - cf: AVERAGE
+      xff: 0.5
+      step: 5
+      rows: 51840      # 180 days of 5-min averages
+    - cf: AVERAGE
+      xff: 0.5
+      step: 30
+      rows: 52560      # ~3 years of 30-min averages
 
-# Monitoring interval
+# === Traceroute ===
+traceroute_directory: /opt/scripts/MTR_WEB/traces/
+
+# === Monitoring Interval ===
 interval_seconds: 60
 
-# Auto-refresh in HTML pages
+# === HTML Display Settings ===
 html_auto_refresh_seconds: 0
-
-# Log display in HTML pages
 log_lines_display: 50
 
-# Graph time ranges (shown as tabs in HTML)
 graph_time_ranges:
   - label: "1h"
     seconds: 3600
@@ -35,20 +67,18 @@ graph_time_ranges:
   - label: "24h"
     seconds: 86400
 
-
-# Cleanup retention settings (in days)
+# === Cleanup Retention (in days) ===
 retention:
-  rrd_days: 30             # Keep RRD files for 30 days
-  logs_days: 60            # Keep log files for 60 days
-  traceroute_days: 45      # Keep traceroute JSONs for 45 days
-  graphs_days: 7           # Keep PNG graphs for 7 days
-  html_days: 10            # Keep old HTML files for 10 days
+  rrd_days: 30
+  logs_days: 60
+  traceroute_days: 45
+  graphs_days: 7
+  html_days: 10
 
-# Optional: enable/disable fping in index.html
+# === Optional FPing Status in index.html ===
 enable_fping_check: true
 
-
-# === Alerting (Not Yet Implemented) ===
+# === Alerting (future) ===
 # alert_email_to: "alerts@example.com"
-# loss_threshold: 50              # % packet loss that triggers an alert
-# debounce_seconds: 300           # Minimum interval between alerts per IP
+# loss_threshold: 50
+# debounce_seconds: 300
