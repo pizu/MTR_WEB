@@ -1,9 +1,14 @@
-# html_builder.py
+#!/usr/bin/env python3
 import os
 import re
 from datetime import datetime
+from utils import load_settings, setup_logger
 
-def generate_target_html(ip, description, hops, settings, logger):
+# Global config and logger
+settings = load_settings()
+logger = setup_logger("html_builder", settings.get("log_directory", "/tmp"), "html_builder.log", settings=settings)
+
+def generate_target_html(ip, description, hops):
     LOG_DIR = settings.get("log_directory", "logs")
     GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
     HTML_DIR = "html"
@@ -129,21 +134,24 @@ function filterLogs() {
                     ts = m.group(1).strip()
                     msg = m.group(2).strip()
                 lmsg = msg.lower()
-                if "loss" in lmsg: level = "WARNING"
-                elif "hop path" in lmsg or "mtr run" in lmsg: level = "INFO"
-                elif "error" in lmsg: level = "ERROR"
+                if "loss" in lmsg:
+                    level = "WARNING"
+                elif "hop path" in lmsg or "mtr run" in lmsg:
+                    level = "INFO"
+                elif "error" in lmsg:
+                    level = "ERROR"
                 color = {"ERROR": "color:red;", "WARNING": "color:orange;", "INFO": "color:lightgreen;"}.get(level, "color:white;")
                 msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 f.write(f"<tr class='log-line'><td>{ts}</td><td style='{color}'>{level}</td><td>{msg}</td></tr>")
 
             f.write("</tbody></table><hr><p><a href='index.html'>Back to index</a></p></body></html>")
         logger.info(f"Generated HTML page: {html_path}")
-        generate_per_hop_html(ip, hops, description, settings, logger)
+        generate_per_hop_html(ip, hops, description)
     except Exception as e:
         logger.exception(f"[{ip}] Failed to generate HTML")
 
 
-def generate_per_hop_html(ip, hops, description, settings, logger):
+def generate_per_hop_html(ip, hops, description):
     GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
     HTML_DIR = "html"
     TIME_RANGES = settings.get("graph_time_ranges", [{"label": "1h", "seconds": 3600}])
