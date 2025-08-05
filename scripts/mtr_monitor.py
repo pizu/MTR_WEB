@@ -25,8 +25,7 @@ rrd_dir = settings.get("rrd_directory", "rrd")
 max_hops = settings.get("max_hops", 30)
 interval = settings.get("interval_seconds", 60)
 
-logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log")
-
+logger = setup_logger("mtr_monitor", settings.get("log_directory", "/tmp"), "mtr_monitor.log", settings=settings)
 
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):
