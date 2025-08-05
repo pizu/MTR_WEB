@@ -31,4 +31,5 @@ logging_levels:
   mtr_monitor: DEBUG
   graph_generator: INFO
   html_generator: WARNING
+  html_builder: INFO
   index_generator: INFO
