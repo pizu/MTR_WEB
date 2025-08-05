@@ -9,13 +9,14 @@ from utils import load_settings, setup_logger
 # Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("index_generator", settings.get("log_directory", "/tmp"), "index_generator.log", settings=settings)
+logger = setup_logger("index_generator", log_directory, "index_generator.log", settings=settings)
 
 LOG_DIR = settings.get("log_directory", "logs")
 HTML_DIR = "html"
 ENABLE_FPING = settings.get("enable_fping_check", True)
 REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
 FPING_PATH = settings.get("fping_path", which("fping"))
+DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
 # Validate fping availability
 if ENABLE_FPING and not FPING_PATH:
@@ -24,7 +25,7 @@ if ENABLE_FPING and not FPING_PATH:
 else:
     logger.info(f"Using fping from: {FPING_PATH}")
 
-# Load targets from YAML
+# Load targets
 try:
     with open("mtr_targets.yaml") as f:
         targets = yaml.safe_load(f).get("targets", [])
@@ -117,7 +118,6 @@ try:
             status = "Unknown"
             last_seen = "Never"
 
-            # Extract last seen from log
             if os.path.exists(log_path):
                 try:
                     with open(log_path) as logf:
@@ -128,7 +128,6 @@ try:
                 except Exception as e:
                     logger.warning(f"Could not read log for {ip}: {e}")
 
-            # Use fping
             if ENABLE_FPING:
                 try:
                     result = subprocess.run(
@@ -143,7 +142,6 @@ try:
             else:
                 logger.debug(f"fping check disabled in settings for {ip}")
 
-            # Write row
             f.write("<tr>")
             f.write(f"<td><a href='{ip}.html'>{ip}</a></td>")
             f.write(f"<td>{description}</td>")
