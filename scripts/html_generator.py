@@ -8,14 +8,15 @@ from graph_utils import get_available_hops
 # Load settings and logger
 settings = load_settings()
 log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("html_generator", settings.get("log_directory", "/tmp"), "html_generator.log", settings=settings)
+logger = setup_logger("html_generator", log_directory, "html_generator.log", settings=settings)
 
 HTML_DIR = "html"
+DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
 # Load targets
 try:
     with open("mtr_targets.yaml") as f:
-        targets = yaml.safe_load(f)["targets"]
+        targets = yaml.safe_load(f).get("targets", [])
     target_ips = [t["ip"] for t in targets]
     logger.info(f"Loaded {len(targets)} targets from mtr_targets.yaml")
 except Exception as e:
@@ -27,7 +28,7 @@ for target in targets:
     ip = target["ip"]
     description = target.get("description", "")
     hops = get_available_hops(ip)
-    generate_target_html(ip, description, hops, settings, logger)
+    generate_target_html(ip, description, hops)
 
 # Clean old files
 try:
