@@ -57,36 +57,42 @@ rrd:
   #Calc Part 1: 60 * 5 = 300
   #Calc Part 2: 604800 / 300 = 2016
   
-  rras:
-    # 1-minute resolution for 24 hours (for incident troubleshooting)
-    - cf: AVERAGE
-      xff: 0.5
-      step: 1
-      rows: 1440     # 1440 = 24h at 1min resolution
+rras:
+  # 1-minute resolution for 1 day
+  - cf: AVERAGE
+    xff: 0.5
+    step: 1           # 1 × 60s = 1min
+    rows: 1440        # 1 day (24h × 60min)
 
-    # 5-minute resolution for 7 days (for short-term trends)
-    - cf: AVERAGE
-      xff: 0.5
-      step: 5
-      rows: 2016     # 2016 = 7 days of 5min data
+  # 5-minute resolution for 7 days
+  - cf: AVERAGE
+    xff: 0.5
+    step: 5           # 5 × 60s = 5min
+    rows: 2016        # 7 days
 
-    # 30-minute resolution for 60 days (longer-term tracking)
-    - cf: AVERAGE
-      xff: 0.5
-      step: 30
-      rows: 2880     # 2880 = 60 days of 30min data
+  # 15-minute resolution for 30 days
+  - cf: AVERAGE
+    xff: 0.5
+    step: 15          # 15 × 60s = 15min
+    rows: 2880        # 30 days (30 × 24 × 4)
 
-    # Max values to catch spikes (e.g., latency or loss)
-    - cf: MAX
-      xff: 0.5
-      step: 30
-      rows: 2880
+  # 1-hour resolution for 90 days
+  - cf: AVERAGE
+    xff: 0.5
+    step: 60          # 60 × 60s = 1h
+    rows: 2160        # 90 days (90 × 24)
 
-    # Optional: last values (good for debugging)
-    - cf: LAST
-      xff: 0.5
-      step: 5
-      rows: 2016
+  # Optional MAX RRA for detecting spikes
+  - cf: MAX
+    xff: 0.5
+    step: 5
+    rows: 2016
+
+  # Optional MIN RRA for low dips
+  - cf: MIN
+    xff: 0.5
+    step: 5
+    rows: 2016
 
 # === Traceroute ===
 traceroute_directory: /opt/scripts/MTR_WEB/traces/
