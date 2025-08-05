@@ -26,3 +26,9 @@ graph_time_ranges:
     seconds: 86400
   - label: "1W"
     seconds: 604800
+logging_levels:
+  controller: INFO
+  mtr_monitor: DEBUG
+  graph_generator: INFO
+  html_generator: WARNING
+  index_generator: INFO
