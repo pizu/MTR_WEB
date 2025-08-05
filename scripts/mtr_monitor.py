@@ -29,6 +29,7 @@ logger = setup_logger("mtr_monitor", settings.get("log_directory", "/tmp"), "mtr
 
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):
+    logger.debug(f"[{ip}] RRD Update values (first 8): {values[:8]}")
     values = []
     for i in range(0, max_hops + 1):
         hop = next((h for h in hops if h.get("count") == i), {})
@@ -198,7 +199,8 @@ def monitor_target(ip, source_ip=None):
         loss_hops = [h for h in hops if h.get("Loss%", 0) > 0]
         for hop in loss_hops:
             logger.warning(f"{ip} loss at hop {hop.get('count')}: {hop.get('Loss%')}%")
-
+            
+        logger.debug(f"[{ip}] Parsed hops: {[ (h.get('count'), h.get('host'), h.get('Avg')) for h in hops ]}")
         update_rrd(rrd_path, hops, ip, debug_rrd_log)
         save_trace_and_json(ip, hops)
 
