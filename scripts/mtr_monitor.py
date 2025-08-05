@@ -27,20 +27,34 @@ interval = settings.get("interval_seconds", 60)
 
 logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log")
 
+
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):
     values = []
     for i in range(0, max_hops + 1):
         hop = next((h for h in hops if h.get("count") == i), {})
-        values += [
-            hop.get("Avg", 'U'),
-            hop.get("Last", 'U'),
-            hop.get("Best", 'U'),
-            hop.get("Loss%", 'U')
-        ]
+        try:
+            avg = round(float(hop.get("Avg", 'U')), 2) if hop.get("Avg") not in [None, 'U'] else 'U'
+        except:
+            avg = 'U'
+        try:
+            last = round(float(hop.get("Last", 'U')), 2) if hop.get("Last") not in [None, 'U'] else 'U'
+        except:
+            last = 'U'
+        try:
+            best = round(float(hop.get("Best", 'U')), 2) if hop.get("Best") not in [None, 'U'] else 'U'
+        except:
+            best = 'U'
+        try:
+            loss = round(float(hop.get("Loss%", 'U')) * 100, 2) if hop.get("Loss%") not in [None, 'U'] else 'U'
+        except:
+            loss = 'U'
+
+        values += [avg, last, best, loss]
 
     timestamp = int(time.time())
     update_str = f"{timestamp}:" + ":".join(str(v) for v in values)
+
     try:
         rrdtool.update(rrd_path, update_str)
     except rrdtool.OperationalError as e:
@@ -48,9 +62,10 @@ def update_rrd(rrd_path, hops, ip, debug_log=None):
 
     if debug_log:
         with open(debug_log, "a") as f:
-            f.write(f"{datetime.now()} {ip} values: {values}\n")
+            f.write(f"{datetime.now()} {ip} values: {values}
+")
 
-# Initialize RRD if not exists
+
 def init_rrd(rrd_path):
     if os.path.exists(rrd_path):
         return
