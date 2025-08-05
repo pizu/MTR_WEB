@@ -29,8 +29,9 @@ graph_height: 200
 #Existing .rrd files must be deleted and recreated to apply new RRA settings (or use rrdtool tune but that's more advanced and limited).
 
 rrd:
-  step: 60         # every 60 seconds a new sample
-  heartbeat: 120   # max expected interval between samples
+  step: 60         # Collect data every 60 seconds
+  heartbeat: 120   # Max time allowed between samples
+
   data_sources:
     - name: avg
       type: GAUGE
@@ -49,23 +50,43 @@ rrd:
       min: 0
       max: 100
 
+  #RRA Calculation formula: rows = (retention_duration_seconds) / (step * base_step_seconds)
+  #retention_duration_seconds = days in seconds (7 days example: 604800)
+  #step = rras step (5)
+  #base_step_seconds = rrd step (60)
+  #Calc Part 1: 60 * 5 = 300
+  #Calc Part 2: 604800 / 300 = 2016
+  
   rras:
+    # 1-minute resolution for 24 hours (for incident troubleshooting)
     - cf: AVERAGE
       xff: 0.5
-      step: 1         # 1 PDP (every minute)
-      rows: 1440      # store 24 hours of 1-minute data
+      step: 1
+      rows: 1440     # 1440 = 24h at 1min resolution
+
+    # 5-minute resolution for 7 days (for short-term trends)
     - cf: AVERAGE
       xff: 0.5
-      step: 5         # 5 minutes
-      rows: 2016      # ~1 week of 5-min averages
+      step: 5
+      rows: 2016     # 2016 = 7 days of 5min data
+
+    # 30-minute resolution for 60 days (longer-term tracking)
     - cf: AVERAGE
       xff: 0.5
-      step: 30        # 30 minutes
-      rows: 1440      # ~1 month of 30-min data
+      step: 30
+      rows: 2880     # 2880 = 60 days of 30min data
+
+    # Max values to catch spikes (e.g., latency or loss)
     - cf: MAX
       xff: 0.5
       step: 30
-      rows: 1440
+      rows: 2880
+
+    # Optional: last values (good for debugging)
+    - cf: LAST
+      xff: 0.5
+      step: 5
+      rows: 2016
 
 # === Traceroute ===
 traceroute_directory: /opt/scripts/MTR_WEB/traces/
