@@ -32,19 +32,21 @@ def load_settings(settings_path=None):
     with open(settings_path, 'r') as f:
         return yaml.safe_load(f)
 
-def setup_logger(name, log_directory, log_filename, settings=None, default_level="INFO"):
+def setup_logger(name, log_directory, log_filename, settings=None, default_level="INFO", extra_file=None):
     """
     Sets up a logger with file and console handlers and a per-script level.
 
-    :param name: Logger name (e.g. "controller", "mtr_monitor")
+    :param name: Logger name (e.g. "mtr_monitor", "8.8.8.8")
     :param log_directory: Directory for log files
-    :param log_filename: Log filename (e.g. controller.log)
+    :param log_filename: Primary log filename (e.g. mtr_monitor.log)
     :param settings: Full settings dict, used to extract per-script level
     :param default_level: Fallback log level
+    :param extra_file: Optional additional file (e.g., per-target log)
     :return: Logger object
     """
     os.makedirs(log_directory, exist_ok=True)
     logger = logging.getLogger(name)
+    logger.propagate = False  # Avoid duplicate log prints
 
     # Prevent duplicate handlers if reused
     if logger.hasHandlers():
@@ -55,20 +57,29 @@ def setup_logger(name, log_directory, log_filename, settings=None, default_level
     if settings and "logging_levels" in settings:
         level_str = settings["logging_levels"].get(name, default_level)
     log_level = getattr(logging, level_str.upper(), logging.INFO)
-    logger.setLevel(log_level)
+    logger.setLevel(logging.DEBUG)  # Always accept all; handlers will filter
 
-    # Formatter
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 
-    # File handler
+    # Main file handler
     file_path = os.path.join(log_directory, log_filename)
     file_handler = logging.FileHandler(file_path)
     file_handler.setFormatter(formatter)
+    file_handler.setLevel(log_level)
     logger.addHandler(file_handler)
 
-    # Console handler
+    # Optional per-target file handler
+    if extra_file:
+        extra_path = os.path.join(log_directory, extra_file)
+        extra_handler = logging.FileHandler(extra_path)
+        extra_handler.setFormatter(formatter)
+        extra_handler.setLevel(log_level)
+        logger.addHandler(extra_handler)
+
+    # Console handler (optional; comment out if running in cron/service)
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
+    console_handler.setLevel(log_level)
     logger.addHandler(console_handler)
 
     return logger
