@@ -10,6 +10,7 @@ from pathlib import Path
 import argparse
 from deepdiff import DeepDiff
 from utils import load_settings, setup_logger
+import logging
 
 # Load settings and logger
 parser = argparse.ArgumentParser()
@@ -25,7 +26,20 @@ rrd_dir = settings.get("rrd_directory", "rrd")
 max_hops = settings.get("max_hops", 30)
 interval = settings.get("interval_seconds", 60)
 
-logger = setup_logger("mtr_monitor", settings.get("log_directory", "/tmp"), "mtr_monitor.log", settings=settings)
+# Shared logger for all monitoring
+shared_logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log", settings=settings)
+
+# Per-target logger
+target_logger = setup_logger(args.target, log_directory, f"{args.target}.log", settings=settings)
+
+# Combine handlers into one logger used below
+logger = logging.getLogger(f"combined_{args.target}")
+logger.setLevel(logging.DEBUG)
+
+# Avoid duplicate handlers if restarting
+if not logger.handlers:
+    for h in shared_logger.handlers + target_logger.handlers:
+        logger.addHandler(h)
 
 # Update the RRD file with new metrics
 def update_rrd(rrd_path, hops, ip, debug_log=None):
