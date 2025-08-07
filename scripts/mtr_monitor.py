@@ -26,13 +26,7 @@ rrd_dir = settings.get("rrd_directory", "rrd")
 max_hops = settings.get("max_hops", 30)
 interval = settings.get("interval_seconds", 60)
 
-logger = setup_logger(
-    "mtr_monitor",
-    log_directory,
-    "mtr_monitor.log",
-    settings=settings,
-    extra_file=f"{args.target}.log"
-)
+logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log", settings=settings, extra_file=f"{args.target}.log")
 
 # Avoid duplicate handlers if restarting
 if not logger.handlers:
