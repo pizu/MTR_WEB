@@ -88,6 +88,8 @@ body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
 .graph-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-top: 10px; }
 .hidden { display: none; }
 .log-line { white-space: pre-wrap; }
+.log-table td { vertical-align: top; padding: 4px 6px; font-size: 13px; }
+.log-table pre { margin: 0; max-height: 120px; overflow: auto; white-space: pre-wrap; word-break: break-word; background-color: #f1f1f1; padding: 4px; border-radius: 4px; font-family: monospace; }
 </style>
 <script>
 function toggleSection(id) {
@@ -185,7 +187,12 @@ function filterLogs() {
                 # Escape HTML-sensitive chars
                 msg = html.escape(msg)
             
-                f.write(f"<tr class='log-line'><td>{ts}</td><td style='{color}'>{level}</td><td>{msg}</td></tr>\n")
+                f.write(f"<tr class='log-line'>")
+                f.write(f"<td>{ts}</td>")
+                f.write(f"<td style='{color}'>{level}</td>")
+                f.write(f"<td><pre>{msg}</pre></td>")
+                f.write(f"</tr>\n")
+
 
             f.write("</tbody></table><hr><p><a href='index.html'>Back to index</a></p></body></html>")
         logger.info(f"Generated HTML page: {html_path}")
