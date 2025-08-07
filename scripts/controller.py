@@ -2,35 +2,31 @@
 #
 # controller.py
 #
-# This script watches mtr_targets.yaml and manages child mtr_monitor.py processes per target.
-# It starts/stops monitor processes based on target config changes.
-#
-# Usage: python3 controller.py
-# Ensure mtr_monitor.py and the YAML files are in place.
+# Watches mtr_targets.yaml and mtr_script_settings.yaml.
+# Starts/stops mtr_monitor.py processes based on target or settings changes.
 
 import yaml
 import time
 import subprocess
 import threading
+import os
 from utils import load_settings, setup_logger
 
-# Initialize settings and logger
-settings = load_settings()
-log_directory = settings.get("log_directory", "/tmp")
-logger = setup_logger("controller", settings.get("log_directory", "/tmp"), "controller.log", settings=settings)
-
+# Constants
 CONFIG_FILE = "mtr_targets.yaml"
 SCRIPT_SETTINGS_FILE = "mtr_script_settings.yaml"
 MONITOR_SCRIPT = "scripts/mtr_monitor.py"
 
-# Track running processes per target
+# Globals
+settings = load_settings(SCRIPT_SETTINGS_FILE)
+log_directory = settings.get("log_directory", "/tmp")
+logger = setup_logger("controller", log_directory, "controller.log", settings=settings)
+
 monitored_targets = {}
 lock = threading.Lock()
+last_settings_mtime = os.path.getmtime(SCRIPT_SETTINGS_FILE)
 
 def load_targets():
-    """
-    Load current targets from the mtr_targets.yaml file.
-    """
     try:
         with open(CONFIG_FILE, "r") as f:
             data = yaml.safe_load(f)
@@ -40,9 +36,6 @@ def load_targets():
         return []
 
 def start_monitor(target):
-    """
-    Start the mtr_monitor.py script for a given target.
-    """
     try:
         args = [
             "python3", MONITOR_SCRIPT,
@@ -60,22 +53,16 @@ def start_monitor(target):
         return None
 
 def stop_monitor(ip):
-    """
-    Stop the monitoring process for a specific IP.
-    """
-    try:
-        with lock:
-            proc = monitored_targets.pop(ip, None)
-            if proc:
+    with lock:
+        proc = monitored_targets.pop(ip, None)
+        if proc:
+            try:
                 proc.terminate()
                 logger.info(f"Stopped monitor for {ip}")
-    except Exception as e:
-        logger.error(f"Failed to stop monitor for {ip}: {e}")
+            except Exception as e:
+                logger.error(f"Failed to stop monitor for {ip}: {e}")
 
 def stop_all():
-    """
-    Stop all running monitor processes.
-    """
     with lock:
         for ip, proc in monitored_targets.items():
             try:
@@ -85,15 +72,36 @@ def stop_all():
                 logger.error(f"Error terminating process for {ip}: {e}")
         monitored_targets.clear()
 
+def restart_all_monitors(targets):
+    logger.info("Settings changed. Restarting all monitors.")
+    stop_all()
+    time.sleep(1)
+    for target in targets:
+        proc = start_monitor(target)
+        if proc:
+            monitored_targets[target["ip"]] = proc
+
 def monitor_loop():
-    """
-    Continuously watch the targets file and start/stop monitors as needed.
-    """
-    logger.info("Controller started. Watching targets...")
+    global last_settings_mtime
+
+    logger.info("Controller started. Watching targets and settings...")
     current_targets = []
 
     while True:
         try:
+            # Check if mtr_script_settings.yaml has changed
+            current_mtime = os.path.getmtime(SCRIPT_SETTINGS_FILE)
+            if current_mtime != last_settings_mtime:
+                last_settings_mtime = current_mtime
+                logger.info("Detected change in mtr_script_settings.yaml.")
+                settings.update(load_settings(SCRIPT_SETTINGS_FILE))
+                targets = load_targets()
+                restart_all_monitors(targets)
+                current_targets = targets
+                time.sleep(1)
+                continue
+
+            # Load current targets
             new_targets = load_targets()
             new_ips = {t["ip"] for t in new_targets}
             cur_ips = set(monitored_targets.keys())
@@ -110,6 +118,7 @@ def monitor_loop():
             for ip in cur_ips - new_ips:
                 stop_monitor(ip)
 
+            current_targets = new_targets
             time.sleep(10)
         except KeyboardInterrupt:
             logger.info("Received KeyboardInterrupt. Shutting down...")
