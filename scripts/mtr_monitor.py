@@ -182,52 +182,58 @@ def monitor_target(ip, source_ip=None):
     rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
     init_rrd(rrd_path)
     init_per_hop_rrds(ip)
-    
+
     debug_rrd_log = os.path.join(log_directory, "rrd_debug.log")
 
     prev_hops = []
-    logger.info(f"Starting monitoring for {ip}")
+    logger.info(f"[{ip}] Monitoring loop started — running MTR")
     while True:
-        logger.info(f"Running MTR for {ip}")
         hops = run_mtr(ip, source_ip)
 
         if not hops:
-            logger.warning(f"No data returned from MTR for {ip}")
+            logger.warning(f"[{ip}] MTR returned no data — target unreachable or command failed")
             time.sleep(interval)
             continue
 
+        # Hop path changes
         if hops_changed(prev_hops, hops):
             prev_hosts = [h.get("host") for h in prev_hops]
             curr_hosts = [h.get("host") for h in hops]
             diff = DeepDiff(prev_hosts, curr_hosts, ignore_order=False)
-            
+
             if diff:
-                logger.info(f"{ip} hop path changed:")
-                
+                logger.info(f"[{ip}] Hop path change detected:")
+
                 for key, value in diff.get("values_changed", {}).items():
                     hop_index = key.split("[")[-1].rstrip("]")
                     old = value.get("old_value")
                     new = value.get("new_value")
-                    logger.info(f" - Hop {hop_index} changed from {old} to {new}")
-                    
+                    logger.info(f" ~ Hop {hop_index} changed from {old} to {new}")
+
                 for key, ip_added in diff.get("iterable_item_added", {}).items():
                     hop_index = key.split("[")[-1].rstrip("]")
-                    logger.info(f" - Hop {hop_index} added: {ip_added}")
-        
+                    logger.info(f" + Hop {hop_index} added: {ip_added}")
+
                 for key, ip_removed in diff.get("iterable_item_removed", {}).items():
                     hop_index = key.split("[")[-1].rstrip("]")
                     logger.info(f" - Hop {hop_index} removed: {ip_removed}")
-                    
+
             prev_hops = hops
 
-
+        # Log packet loss
         loss_hops = [h for h in hops if h.get("Loss%", 0) > 0]
         for hop in loss_hops:
-            logger.warning(f"{ip} loss at hop {hop.get('count')}: {hop.get('Loss%')}%")
-            
+            logger.warning(f"[{ip}] Loss at hop {hop.get('count')}: {hop.get('Loss%')}%")
+
+        if loss_hops:
+            total_loss = sum(h.get("Loss%", 0) for h in loss_hops)
+            logger.info(f"[{ip}] Loss summary: {len(loss_hops)} hops affected, total loss: {round(total_loss, 2)}%")
+
+        # Debug and update
         logger.debug(f"[{ip}] Parsed hops: {[ (h.get('count'), h.get('host'), h.get('Avg')) for h in hops ]}")
         update_rrd(rrd_path, hops, ip, debug_rrd_log)
         save_trace_and_json(ip, hops)
+        logger.info(f"[{ip}] Traceroute and hop map saved.")
 
         time.sleep(interval)
 
