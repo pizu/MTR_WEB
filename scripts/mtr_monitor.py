@@ -133,7 +133,7 @@ def parse_mtr_output(output):
 
 # Run MTR with given source (if any)
 def run_mtr(target, source_ip=None):
-    cmd = ["mtr", "--json", "--report-cycles", "1", "--no-dns"]
+    cmd = ["mtr", "--json", "--report-cycles", "30", "--no-dns"]
     if source_ip:
         cmd += ["--address", source_ip]
     cmd.append(target)
