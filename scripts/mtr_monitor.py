@@ -191,13 +191,29 @@ def monitor_target(ip, source_ip=None):
             continue
 
         if hops_changed(prev_hops, hops):
-            diff = DeepDiff(
-                [h.get("host") for h in prev_hops],
-                [h.get("host") for h in hops],
-                ignore_order=True
-            )
-            logger.info(f"{ip} hop path changed: {diff.pretty()}")
+            prev_hosts = [h.get("host") for h in prev_hops]
+            curr_hosts = [h.get("host") for h in hops]
+            diff = DeepDiff(prev_hosts, curr_hosts, ignore_order=False)
+            
+            if diff:
+                logger.info(f"{ip} hop path changed:")
+                
+                for key, value in diff.get("values_changed", {}).items():
+                    hop_index = key.split("[")[-1].rstrip("]")
+                    old = value.get("old_value")
+                    new = value.get("new_value")
+                    logger.info(f" - Hop {hop_index} changed from {old} to {new}")
+                    
+                for key, ip_added in diff.get("iterable_item_added", {}).items():
+                    hop_index = key.split("[")[-1].rstrip("]")
+                    logger.info(f" - Hop {hop_index} added: {ip_added}")
+        
+                for key, ip_removed in diff.get("iterable_item_removed", {}).items():
+                    hop_index = key.split("[")[-1].rstrip("]")
+                    logger.info(f" - Hop {hop_index} removed: {ip_removed}")
+                    
             prev_hops = hops
+
 
         loss_hops = [h for h in hops if h.get("Loss%", 0) > 0]
         for hop in loss_hops:
