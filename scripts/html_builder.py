@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import re
+import html
 import rrdtool
 from datetime import datetime
 from utils import load_settings, setup_logger
@@ -166,23 +167,25 @@ function filterLogs() {
             f.write("<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
             f.write("<table class='log-table'><thead><tr><th>Timestamp</th><th>Level</th><th>Message</th></tr></thead><tbody>")
 
-            ts_re = re.compile(r"\[(.*?)\]\s*(.*)")
+            log_line_re = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \[(\w+)\] (.*)")
             for line in logs:
-                ts, msg, level = "", line, ""
-                m = ts_re.match(line)
-                if m:
-                    ts = m.group(1).strip()
-                    msg = m.group(2).strip()
-                lmsg = msg.lower()
-                if "loss" in lmsg:
-                    level = "WARNING"
-                elif "hop path" in lmsg or "mtr run" in lmsg:
-                    level = "INFO"
-                elif "error" in lmsg:
-                    level = "ERROR"
-                color = {"ERROR": "color:red;", "WARNING": "color:orange;", "INFO": "color:lightgreen;"}.get(level, "color:white;")
-                msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                f.write(f"<tr class='log-line'><td>{ts}</td><td style='{color}'>{level}</td><td>{msg}</td></tr>")
+                line = line.strip()
+                match = log_line_re.match(line)
+                if match:
+                    ts, level, msg = match.groups()
+                else:
+                    ts, level, msg = "", "", line  # Fallback for malformed lines
+                color = {
+                    "DEBUG": "color:gray;",
+                    "INFO": "color:lightgreen;",
+                    "WARNING": "color:orange;",
+                    "ERROR": "color:red;"
+                }.get(level.upper(), "color:white;")
+                
+                # Escape HTML-sensitive chars
+                msg = html.escape(msg)
+            
+                f.write(f"<tr class='log-line'><td>{ts}</td><td style='{color}'>{level}</td><td>{msg}</td></tr>\n")
 
             f.write("</tbody></table><hr><p><a href='index.html'>Back to index</a></p></body></html>")
         logger.info(f"Generated HTML page: {html_path}")
