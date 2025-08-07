@@ -26,15 +26,13 @@ rrd_dir = settings.get("rrd_directory", "rrd")
 max_hops = settings.get("max_hops", 30)
 interval = settings.get("interval_seconds", 60)
 
-# Shared logger for all monitoring
-shared_logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log", settings=settings)
-
-# Per-target logger
-target_logger = setup_logger(args.target, log_directory, f"{args.target}.log", settings=settings)
-
-# Combine handlers into one logger used below
-logger = logging.getLogger(f"combined_{args.target}")
-logger.setLevel(logging.DEBUG)
+logger = setup_logger(
+    "mtr_monitor",
+    log_directory,
+    "mtr_monitor.log",
+    settings=settings,
+    extra_file=f"{args.target}.log"
+)
 
 # Avoid duplicate handlers if restarting
 if not logger.handlers:
