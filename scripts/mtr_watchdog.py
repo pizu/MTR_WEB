@@ -3,9 +3,12 @@
 mtr_watchdog.py — Entrypoint for launching MTR monitoring for a single target.
 This script loads settings, initializes logging, and starts the monitoring loop.
 """
+import os
+import sys
+sys.path.insert(0, os.path.dirname(__file__))  # Add current dir to sys.path
 
 import argparse  # Used for parsing command-line arguments
-from utils import load_settings, setup_logger  # Your utility functions to load YAML + logging setup
+from modules.utils import load_settings, setup_logger  # Your utility functions to load YAML + logging setup
 from modules.monitor import monitor_target  # The core monitoring logic
 
 # ----------------------
