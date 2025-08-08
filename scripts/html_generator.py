@@ -34,8 +34,8 @@ for target in targets:
     description = target.get("description", "")
     hops = get_available_hops(ip)
 
-    generate_target_html(ip, description, hops)
-    generate_per_hop_html(ip, hops, description)
+    generate_target_html(ip, description, hops, settings)
+    generate_per_hop_html(ip, hops, description, settings)
 
 # Clean old files
 remove_orphan_html_files(HTML_DIR, target_ips, logger)
