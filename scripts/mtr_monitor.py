@@ -72,8 +72,7 @@ def update_rrd(rrd_path, hops, ip, debug_log=None):
 
     if debug_log:
         with open(debug_log, "a") as f:
-            f.write(f"{datetime.now()} {ip} values: {values}
-")
+            f.write(f"{datetime.now()} {ip} values: {values}")
 
 
 def update_per_hop_rrds(ip, hops):
@@ -166,8 +165,7 @@ update_per_hop_rrds(ip, hops)
             hop_num = hop.get("count", "?")
             ip_addr = hop.get("host", "?")
             latency = hop.get("Avg", "U")
-            f.write(f"{hop_num} {ip_addr} {latency} ms
-")
+            f.write(f"{hop_num} {ip_addr} {latency} ms")
     logger.info(f"Saved traceroute to {txt_path}")
     json_path = os.path.join(traceroute_dir, f"{ip}.json")
     hop_map = {f"hop{hop['count']}": hop.get("host", f"hop{hop['count']}") for hop in hops}
