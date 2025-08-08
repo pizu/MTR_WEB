@@ -12,7 +12,7 @@ from modules.html_builder.per_hop_html import generate_per_hop_html
 from modules.html_cleanup import remove_orphan_html_files
 
 # Load settings and logger
-settings = load_settings()
+settings = load_settings("mtr_script_settings.yaml")
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("html_generator", log_directory, "html_generator.log", settings=settings)
 
