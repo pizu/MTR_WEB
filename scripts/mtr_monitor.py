@@ -157,7 +157,7 @@ def run_mtr(target, source_ip=None):
         return []
 
 def save_trace_and_json(ip, hops):
-update_per_hop_rrds(ip, hops)
+    update_per_hop_rrds(ip, hops)
     os.makedirs(traceroute_dir, exist_ok=True)
     txt_path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
     with open(txt_path, "w") as f:
