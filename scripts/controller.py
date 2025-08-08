@@ -3,7 +3,7 @@
 # controller.py
 #
 # Watches mtr_targets.yaml and mtr_script_settings.yaml.
-# Starts/stops mtr_monitor.py processes based on target or settings changes.
+# Starts/stops mtr_watchdog.py processes based on target or settings changes.
 
 import yaml
 import time
@@ -15,7 +15,7 @@ from utils import load_settings, setup_logger
 # Constants
 CONFIG_FILE = "mtr_targets.yaml"
 SCRIPT_SETTINGS_FILE = "mtr_script_settings.yaml"
-MONITOR_SCRIPT = "scripts/mtr_monitor.py"
+MONITOR_SCRIPT = "scripts/mtr_watchdog.py"  # <== updated to match new entrypoint
 
 # Globals
 settings = load_settings(SCRIPT_SETTINGS_FILE)
@@ -27,6 +27,10 @@ lock = threading.Lock()
 last_settings_mtime = os.path.getmtime(SCRIPT_SETTINGS_FILE)
 
 def load_targets():
+    """
+    Reads the YAML file with the list of targets.
+    Returns a list of target dictionaries with 'ip' and optionally 'source_ip'.
+    """
     try:
         with open(CONFIG_FILE, "r") as f:
             data = yaml.safe_load(f)
@@ -36,6 +40,9 @@ def load_targets():
         return []
 
 def start_monitor(target):
+    """
+    Starts a new subprocess for a single target using mtr_watchdog.py.
+    """
     try:
         args = [
             "python3", MONITOR_SCRIPT,
@@ -53,6 +60,9 @@ def start_monitor(target):
         return None
 
 def stop_monitor(ip):
+    """
+    Stops the subprocess for a specific target IP.
+    """
     with lock:
         proc = monitored_targets.pop(ip, None)
         if proc:
@@ -63,6 +73,9 @@ def stop_monitor(ip):
                 logger.error(f"Failed to stop monitor for {ip}: {e}")
 
 def stop_all():
+    """
+    Stops all running monitor subprocesses.
+    """
     with lock:
         for ip, proc in monitored_targets.items():
             try:
@@ -73,6 +86,9 @@ def stop_all():
         monitored_targets.clear()
 
 def restart_all_monitors(targets):
+    """
+    Restarts all monitor subprocesses — used when settings.yaml is updated.
+    """
     logger.info("Settings changed. Restarting all monitors.")
     stop_all()
     time.sleep(1)
@@ -82,6 +98,11 @@ def restart_all_monitors(targets):
             monitored_targets[target["ip"]] = proc
 
 def monitor_loop():
+    """
+    Main controller loop that checks for changes to:
+    - mtr_script_settings.yaml (to trigger full restarts)
+    - mtr_targets.yaml (to add/remove targets)
+    """
     global last_settings_mtime
 
     logger.info("Controller started. Watching targets and settings...")
@@ -89,7 +110,7 @@ def monitor_loop():
 
     while True:
         try:
-            # Check if mtr_script_settings.yaml has changed
+            # Check if mtr_script_settings.yaml changed (file mtime)
             current_mtime = os.path.getmtime(SCRIPT_SETTINGS_FILE)
             if current_mtime != last_settings_mtime:
                 last_settings_mtime = current_mtime
@@ -120,6 +141,7 @@ def monitor_loop():
 
             current_targets = new_targets
             time.sleep(10)
+
         except KeyboardInterrupt:
             logger.info("Received KeyboardInterrupt. Shutting down...")
             stop_all()
