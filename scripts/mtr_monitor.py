@@ -25,6 +25,7 @@ traceroute_dir = settings.get("traceroute_directory", "traceroute")
 rrd_dir = settings.get("rrd_directory", "rrd")
 max_hops = settings.get("max_hops", 30)
 interval = settings.get("interval_seconds", 60)
+severity_rules = settings.get("log_severity_rules", [])
 
 logger = setup_logger("mtr_monitor", log_directory, "mtr_monitor.log", settings=settings, extra_file=f"{args.target}.log")
 
