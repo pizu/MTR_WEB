@@ -2,7 +2,9 @@
 
 import os
 import yaml
-from utils import load_settings, setup_logger
+import sys
+sys.path.insert(0, os.path.dirname(__file__))  # Allow local imports from scripts/modules
+from modules.utils import load_settings, setup_logger
 from modules.graph_utils import get_available_hops
 from modules.html_builder.target_html import generate_target_html
 from modules.html_builder.per_hop_html import generate_per_hop_html
