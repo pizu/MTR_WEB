@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 import os
+import sys
+sys.path.insert(0, os.path.dirname(__file__))  # So modules/* is importable
+
 import yaml
 import rrdtool
 import re
 import math
-from utils import load_settings, setup_logger
+from modules.utils import load_settings, setup_logger
 from modules.graph_utils import get_labels
 
 # Load settings and logger
