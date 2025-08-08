@@ -29,3 +29,30 @@ def get_available_hops(ip, graph_dir="html/graphs"):
             hops.add(int(match.group(1)))
 
     return sorted(hops)
+
+def get_labels(ip, traceroute_dir="traceroute"):
+    """
+    Loads hop labels from a traceroute file (e.g. 1.1.1.1.trace.txt)
+    Returns a list of tuples: (hop_number, label)
+
+    Example return: [(0, 'Hop 0 - 192.0.2.1'), (1, 'Hop 1 - 203.0.113.1')]
+    """
+    path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
+    if not os.path.exists(path):
+        return []
+
+    hops = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(maxsplit=2)
+            if len(parts) >= 2:
+                try:
+                    hop_num = int(parts[0])
+                    hop_ip = parts[1]
+                    hops.append((hop_num, f"Hop {hop_num} - {hop_ip}"))
+                except ValueError:
+                    continue
+    return hops
