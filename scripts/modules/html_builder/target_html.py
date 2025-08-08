@@ -168,7 +168,7 @@ function filterLogs() {
             f.write("</tbody></table><hr><p><a href='index.html'>Back to index</a></p></body></html>")
 
         logger.info(f"Generated HTML for {ip}")
-        generate_per_hop_html(ip, hops, description)
+        generate_per_hop_html(ip, hops, description, settings)
 
     except Exception as e:
         logger.exception(f"[{ip}] Failed to generate target HTML")
