@@ -127,6 +127,21 @@ retention:
   graphs_days: 7
   html_days: 10
 
+# === Custom Logging Severity Rules - Optional ===
+log_severity_rules:
+  - tag: LOSS_SPIKE
+    level: WARNING
+    match: "loss > 10"
+  - tag: HOP_CHANGED
+    level: INFO
+    match: "hop_changed"
+  - tag: LOSS_RECOVERED
+    level: INFO
+    match: "prev_loss > 0 and loss == 0"
+
+# === FPing Path ===
+fping_path: /usr/sbin/fping
+
 # === Optional FPing in index.html ===
 enable_fping_check: true
 
