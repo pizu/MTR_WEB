@@ -28,7 +28,9 @@ import logging
 
 def load_settings(settings_path=None):
     if settings_path is None:
-        settings_path = os.path.join(os.path.dirname(__file__), '../mtr_script_settings.yaml')
+        # Try ../mtr_script_settings.yaml
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        settings_path = os.path.join(base_dir, "mtr_script_settings.yaml")
     with open(settings_path, 'r') as f:
         return yaml.safe_load(f)
 
