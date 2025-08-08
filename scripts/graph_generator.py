@@ -11,7 +11,7 @@ from modules.utils import load_settings, setup_logger
 from modules.graph_utils import get_labels
 
 # Load settings and logger
-settings = load_settings()
+settings = load_settings("mtr_script_settings.yaml")
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("graph_generator", log_directory, "graph_generator.log", settings=settings)
 
