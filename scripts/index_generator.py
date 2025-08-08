@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import sys
+sys.path.insert(0, os.path.dirname(__file__))  # Allow local imports from scripts/modules
 
 import yaml
-from utils import load_settings, setup_logger
+from modules.utils import load_settings, setup_logger
 from modules.index_writer import generate_index_page
 
 # Load settings
