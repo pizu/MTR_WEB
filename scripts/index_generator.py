@@ -7,7 +7,7 @@ from modules.utils import load_settings, setup_logger
 from modules.index_writer import generate_index_page
 
 # Load settings
-settings = load_settings()
+settings = load_settings("mtr_script_settings.yaml")
 logger = setup_logger("index_generator", settings.get("log_directory", "/tmp"), "index_generator.log", settings=settings)
 
 # Load targets from mtr_targets.yaml
