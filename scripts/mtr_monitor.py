@@ -72,24 +72,7 @@ def update_rrd(rrd_path, hops, ip, debug_log=None):
 
     if debug_log:
         with open(debug_log, "a") as f:
-            f.write(f"{datetime.now()} {ip} values: {values}")
-
-
-def update_per_hop_rrds(ip, hops):
-    for hop in hops:
-        hop_index = hop.get("count")
-        if hop_index is None:
-            continue
-        rrd_file = os.path.join(rrd_dir, f"{ip}_hop{hop_index}.rrd")
-        if not os.path.exists(rrd_file):
-            continue
-        try:
-            update_str = f"N:"
-            update_str += ":".join(str(round(float(hop.get(ds['name'], 'U')), 2)) if hop.get(ds['name']) not in [None, 'U'] else 'U'
-                                   for ds in settings.get("rrd", {}).get("data_sources", []))
-            rrdtool.update(rrd_file, update_str)
-        except Exception as e:
-            logger.warning(f"[{ip}] Failed to update {rrd_file}: {e}")
+            f.write(f"{datetime.now()} {ip} values: {values}\n")
 
 def init_rrd(rrd_path):
     if os.path.exists(rrd_path):
@@ -107,7 +90,7 @@ def init_rrd(rrd_path):
             data_sources.append(f"DS:{name}:{ds['type']}:{heartbeat}:{ds['min']}:{ds['max']}")
     rras = [f"RRA:{r['cf']}:{r['xff']}:{r['step']}:{r['rows']}" for r in rra_schema]
     rrdtool.create(rrd_path, "--step", str(step), *data_sources, *rras)
-    logger.info(f"[{rrd_path}] RRD created with dynamic schema from settings.")
+    logger.info(f"[{rrd_path}] RRD created with dynamic schema.")
 
 def init_per_hop_rrds(ip):
     rrd_config = settings.get("rrd", {})
@@ -157,7 +140,6 @@ def run_mtr(target, source_ip=None):
         return []
 
 def save_trace_and_json(ip, hops):
-    update_per_hop_rrds(ip, hops)
     os.makedirs(traceroute_dir, exist_ok=True)
     txt_path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
     with open(txt_path, "w") as f:
@@ -165,8 +147,9 @@ def save_trace_and_json(ip, hops):
             hop_num = hop.get("count", "?")
             ip_addr = hop.get("host", "?")
             latency = hop.get("Avg", "U")
-            f.write(f"{hop_num} {ip_addr} {latency} ms")
+            f.write(f"{hop_num} {ip_addr} {latency} ms\n")
     logger.info(f"Saved traceroute to {txt_path}")
+
     json_path = os.path.join(traceroute_dir, f"{ip}.json")
     hop_map = {f"hop{hop['count']}": hop.get("host", f"hop{hop['count']}") for hop in hops}
     with open(json_path, "w") as f:
@@ -234,7 +217,6 @@ def monitor_target(ip, source_ip=None):
             logger.debug(f"[{ip}] Parsed hops: {[ (h.get('count'), h.get('host'), h.get('Avg')) for h in hops ]}")
             update_rrd(rrd_path, hops, ip, debug_rrd_log)
             save_trace_and_json(ip, hops)
-            update_per_hop_rrds(ip, hops)
             logger.info(f"[{ip}] Traceroute and hop map saved.")
         else:
             logger.debug(f"[{ip}] No change detected — {len(hops)} hops parsed. No update performed.")
