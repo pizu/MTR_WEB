@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
 import os
-import yaml
 import sys
 sys.path.insert(0, os.path.dirname(__file__))  # Allow local imports from scripts/modules
+
+import yaml
 from modules.utils import load_settings, setup_logger
 from modules.graph_utils import get_available_hops
 from modules.html_builder.target_html import generate_target_html
