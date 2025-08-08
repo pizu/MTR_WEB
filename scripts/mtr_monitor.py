@@ -213,13 +213,14 @@ def monitor_target(ip, source_ip=None):
                 msg = f"[{ip}] Loss at hop {hop_num}: {loss}% (prev: {context['prev_loss']}%)"
                 log_fn(f"[{tag}] {msg}" if tag else msg)
 
+        update_rrd(rrd_path, hops, ip, debug_rrd_log)
         if hop_path_changed or loss_changed:
             logger.debug(f"[{ip}] Parsed hops: {[ (h.get('count'), h.get('host'), h.get('Avg')) for h in hops ]}")
-            update_rrd(rrd_path, hops, ip, debug_rrd_log)
             save_trace_and_json(ip, hops)
             logger.info(f"[{ip}] Traceroute and hop map saved.")
         else:
-            logger.debug(f"[{ip}] No change detected — {len(hops)} hops parsed. No update performed.")
+            logger.debug(f"[{ip}] No change detected — {len(hops)} hops parsed. RRD still updated.")
+
 
         prev_hops = hops
         prev_loss_state = curr_loss_state
