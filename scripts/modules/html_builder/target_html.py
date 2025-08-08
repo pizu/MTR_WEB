@@ -9,11 +9,7 @@ from modules.utils import load_settings, setup_logger
 from modules.html_builder.per_hop_html import generate_per_hop_html
 from modules.rrd_metrics import get_rrd_metrics
 
-# Load settings and logger
-settings = load_settings()
-logger = setup_logger("target_html", settings.get("log_directory", "/tmp"), "target_html.log", settings=settings)
-
-def generate_target_html(ip, description, hops):
+def generate_target_html(ip, description, hops, settings):
     """
     Generates the main HTML page for a target IP, showing:
     - Summary graphs (avg, loss, etc.)
@@ -23,6 +19,7 @@ def generate_target_html(ip, description, hops):
 
     It saves the file as: html/<ip>.html
     """
+    logger = setup_logger("target_html", settings.get("log_directory", "/tmp"), "target_html.log", settings=settings)
     LOG_DIR = settings.get("log_directory", "logs")
     GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
     HTML_DIR = "html"
