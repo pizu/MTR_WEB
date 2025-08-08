@@ -81,6 +81,11 @@ def parse_mtr_output(output, logger=None):
         for i, hop in enumerate(hops):
             hop["count"] = i
             hop["host"] = hop.get("host", f"hop{i}")
+            # Ensure numeric Loss% exists
+            try:
+                hop["Loss%"] = float(hop.get("Loss%", 0))
+            except:
+                hop["Loss%"] = 0.0
 
         return hops
 
