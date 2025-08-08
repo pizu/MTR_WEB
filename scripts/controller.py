@@ -5,13 +5,13 @@
 # Watches mtr_targets.yaml and mtr_script_settings.yaml.
 # Starts/stops mtr_watchdog.py processes based on target or settings changes.
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(__file__))  # Allow local imports from scripts/modules
 import yaml
 import time
 import subprocess
 import threading
-import os
-import sys
-sys.path.insert(0, os.path.dirname(__file__))  # Allow local imports from scripts/modules
 from modules.utils import load_settings, setup_logger
 
 # Constants
