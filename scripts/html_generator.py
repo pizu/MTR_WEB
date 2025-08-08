@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+
 import os
 import yaml
 from utils import load_settings, setup_logger
-from html_builder import generate_target_html, generate_per_hop_html
-from graph_utils import get_available_hops
+from modules.graph_utils import get_available_hops
+from modules.html_builder.target_html import generate_target_html
+from modules.html_builder.per_hop_html import generate_per_hop_html
+from modules.html_cleanup import remove_orphan_html_files
 
 # Load settings and logger
 settings = load_settings()
@@ -11,7 +14,6 @@ log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("html_generator", log_directory, "html_generator.log", settings=settings)
 
 HTML_DIR = "html"
-DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
 # Load targets
 try:
@@ -28,16 +30,9 @@ for target in targets:
     ip = target["ip"]
     description = target.get("description", "")
     hops = get_available_hops(ip)
+
     generate_target_html(ip, description, hops)
     generate_per_hop_html(ip, hops, description)
 
 # Clean old files
-try:
-    all_html = [f for f in os.listdir(HTML_DIR) if f.endswith(".html") and f != "index.html"]
-    for f in all_html:
-        ip_clean = f.replace("_hops.html", "").replace(".html", "")
-        if ip_clean not in target_ips:
-            os.remove(os.path.join(HTML_DIR, f))
-            logger.info(f"Removed stale HTML file: {f}")
-except Exception as e:
-    logger.warning(f"Failed to clean orphan HTML: {e}")
+remove_orphan_html_files(HTML_DIR, target_ips, logger)
