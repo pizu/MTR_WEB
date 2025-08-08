@@ -4,9 +4,6 @@
 import os
 from modules.utils import load_settings, setup_logger
 
-# Load settings and logger
-logger = setup_logger("per_hop_html", settings.get("log_directory", "/tmp"), "per_hop_html.log", settings=settings)
-
 def generate_per_hop_html(ip, hops, description, settings):
     """
     Generates a separate HTML page (e.g. 1.1.1.1_hops.html) showing all graphs per hop.
@@ -21,6 +18,9 @@ def generate_per_hop_html(ip, hops, description, settings):
     Output:
         Saves: html/<ip>_hops.html
     """
+    from modules.utils import setup_logger  # safe to import here if needed
+    logger = setup_logger("per_hop_html", settings.get("log_directory", "/tmp"), "per_hop_html.log", settings=settings)
+    
     GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
     HTML_DIR = "html"
     TIME_RANGES = settings.get("graph_time_ranges", [{"label": "1h", "seconds": 3600}])
