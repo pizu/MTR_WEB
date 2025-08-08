@@ -5,6 +5,7 @@ import rrdtool
 import re
 import math
 from utils import load_settings, setup_logger
+from modules.graph_utils import get_labels
 
 # Load settings and logger
 settings = load_settings()
@@ -32,28 +33,6 @@ def get_color_by_hop(hop_index):
     g = int((1 + math.sin(hop_index * 0.3 + 2)) * 127)
     b = int((1 + math.sin(hop_index * 0.3 + 4)) * 127)
     return f"{r:02x}{g:02x}{b:02x}"
-
-# Load traceroute hop labels
-def get_labels(ip):
-    path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
-    if not os.path.exists(path):
-        return []
-
-    hops = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(maxsplit=2)
-            if len(parts) >= 2:
-                try:
-                    hop_num = int(parts[0])
-                    hop_ip = parts[1]
-                    hops.append((hop_num, f"Hop {hop_num} - {hop_ip}"))
-                except ValueError:
-                    continue
-    return hops
 
 # Remove obsolete graphs for this IP
 def clean_old_graphs(ip, expected_pngs):
@@ -119,7 +98,7 @@ for target in targets:
 
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
 
-    hops = get_labels(ip)
+    hops = get_labels(ip, traceroute_dir=TRACEROUTE_DIR)
     if not hops:
         logger.warning(f"[SKIP] No valid traceroute data for {ip}")
         continue
