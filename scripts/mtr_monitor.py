@@ -208,7 +208,7 @@ def monitor_target(ip, source_ip=None):
                     "hop_changed": hop_path_changed,
                 }
                 tag, level = evaluate_severity_rules(severity_rules, context)
-                log_fn = getattr(logger, level.lower(), logger.warning if loss > 0 else logger.info)
+                log_fn = getattr(logger, level.lower(), logger.warning if loss > 0 else logger.info) if isinstance(level, str) else (logger.warning if loss > 0 else logger.info)
                 msg = f"[{ip}] Loss at hop {hop_num}: {loss}% (prev: {context['prev_loss']}%)"
                 log_fn(f"[{tag}] {msg}" if tag else msg)
 
@@ -218,7 +218,7 @@ def monitor_target(ip, source_ip=None):
             save_trace_and_json(ip, hops)
             logger.info(f"[{ip}] Traceroute and hop map saved.")
         else:
-            logger.debug(f"[{ip}] No hop or loss change — skipping log update.")
+            logger.debug(f"[{ip}] No change detected — {len(hops)} hops parsed. No update performed.")
 
         prev_hops = hops
         prev_loss_state = curr_loss_state
