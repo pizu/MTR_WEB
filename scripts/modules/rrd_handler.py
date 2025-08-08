@@ -85,7 +85,7 @@ def init_per_hop_rrds(ip, settings, logger):
         logger.info(f"[{hop_rrd_path}] Per-hop RRD created.")
 
 
-def update_rrd(rrd_path, hops, ip, settings, debug_log=None):
+def update_rrd(rrd_path, hops, ip, settings, debug_log=True):
     """
     Updates a multi-hop RRD file with new metrics from the latest MTR run.
 
