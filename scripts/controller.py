@@ -10,7 +10,9 @@ import time
 import subprocess
 import threading
 import os
-from utils import load_settings, setup_logger
+import sys
+sys.path.insert(0, os.path.dirname(__file__))  # Allow local imports from scripts/modules
+from modules.utils import load_settings, setup_logger
 
 # Constants
 CONFIG_FILE = "mtr_targets.yaml"
