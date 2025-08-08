@@ -72,8 +72,7 @@ def update_rrd(rrd_path, hops, ip, debug_log=None):
 
     if debug_log:
         with open(debug_log, "a") as f:
-            f.write(f"{datetime.now()} {ip} values: {values}
-")
+            f.write(f"{datetime.now()} {ip} values: {values}")
 
 def init_rrd(rrd_path):
     if os.path.exists(rrd_path):
