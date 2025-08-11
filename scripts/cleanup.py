@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-\"\"\"
-cleanup.py
-Deletes old RRD, log, traceroute, graph, and HTML files based on per-type retention
-defined in mtr_script_settings.yaml. Uses shared logger from utils.py.
+#
+#cleanup.py
+#Deletes old RRD, log, traceroute, graph, and HTML files based on per-type retention
+#defined in mtr_script_settings.yaml. Uses shared logger from utils.py.
 
-Enhancement: adds a safety buffer so we never delete very recent files that may still
-be in use - specifically, PNG graphs newer than 2x RRD step (configurable).
-\"\"\"
+#Enhancement: adds a safety buffer so we never delete very recent files that may still
+#be in use - specifically, PNG graphs newer than 2x RRD step (configurable).
+#
 
 import os
 import sys
