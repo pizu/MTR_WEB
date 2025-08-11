@@ -120,7 +120,7 @@ def update_rrd(rrd_path, hops, ip, settings, debug_log=True):
             best = 'U'
 
         try:
-            loss = round(float(hop.get("Loss%", 'U')) * 100, 2) if hop.get("Loss%") not in [None, 'U'] else 'U'
+            loss = round(float(hop.get("Loss%", 'U')), 2) if hop.get("Loss%") not in [None, 'U'] else 'U'
         except:
             loss = 'U'
 
