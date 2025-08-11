@@ -7,9 +7,11 @@ targets:
   - ip: 8.8.8.8
     source_ip: 192.168.1.10
     description: Test 8.8.8.8 from 192.168.1.10
+    paused: false # false = active, true = paused
   - ip: 1.1.1.1
     source_ip: null
     description: Test 1.1.1.1
+    paused: true # will not be monitored
 
 mtr_settings:
   count: 10
