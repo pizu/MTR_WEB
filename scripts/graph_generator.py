@@ -39,6 +39,10 @@ GRAPH_WIDTH = settings.get("graph_width", 800)
 GRAPH_HEIGHT = settings.get("graph_height", 200)
 TIME_RANGES = settings.get("graph_time_ranges", [])
 
+raw_parallelism = settings.get("graph_generation", {}).get("parallelism", "auto")
+CPU_COUNT = os.cpu_count() or 2
+PARALLELISM = CPU_COUNT if str(raw_parallelism).lower() == "auto" else int(raw_parallelism)
+
 DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
 GRAPH_CFG = settings.get("graph_generation", {})
@@ -135,6 +139,31 @@ def clean_old_graphs(ip: str, expected_pngs: set):
     except FileNotFoundError:
         pass
 
+def try_set_affinity_spread():
+    """
+    On Linux, pin the current process to one CPU in a round-robin pattern.
+    Not required (the OS already balances), but can help avoid cache ping-pong.
+    """
+    try:
+        # Prefer Python's built-in affinity if available
+        if hasattr(os, "sched_setaffinity") and hasattr(os, "sched_getaffinity"):
+            cpus = sorted(list(os.sched_getaffinity(0)))
+            if not cpus:
+                return
+            core = cpus[os.getpid() % len(cpus)]
+            os.sched_setaffinity(0, {core})
+        else:
+            # Optional: psutil fallback if you have it installed
+            try:
+                import psutil
+                p = psutil.Process()
+                cpus = list(range(psutil.cpu_count(logical=True) or 1))
+                core = cpus[os.getpid() % len(cpus)]
+                p.cpu_affinity([core])
+            except Exception:
+                pass
+    except Exception:
+        pass
 # -------------------------
 # Worker functions (must be top-level to be picklable for ProcessPool)
 # -------------------------
@@ -145,8 +174,16 @@ def _graph_summary_work(args):
     (ip, rrd_path, metric, label, seconds, hops, width, height,
      skip_unchanged, recent_safety_seconds, tracer_dir, use_lock, exec_kind) = args
 
+    # Honor CPU affinity setting
+    if str(settings.get("graph_generation", {}).get("cpu_affinity", "none")).lower() == "spread":
+        try_set_affinity_spread()
+
     # Reconstruct helpers needed in child process
     def _tr_mtime(ip_):
+        # Honor CPU affinity setting
+        if str(settings.get("graph_generation", {}).get("cpu_affinity", "none")).lower() == "spread":
+            try_set_affinity_spread()
+
         latest = 0.0
         try:
             if not os.path.isdir(tracer_dir):
@@ -212,6 +249,10 @@ def _graph_hop_work(args):
     """
     (ip, rrd_path, hop_index, metric, label, seconds, ds_present, hop_label, width, height,
      skip_unchanged, recent_safety_seconds, tracer_dir, use_lock, exec_kind) = args
+
+    # Honor CPU affinity setting
+    if str(settings.get("graph_generation", {}).get("cpu_affinity", "none")).lower() == "spread":
+        try_set_affinity_spread()
 
     def _tr_mtime(ip_):
         latest = 0.0
