@@ -48,11 +48,11 @@ log_directory = settings.get("log_directory", "/tmp")
 # Create a logger named 'mtr_watchdog' that writes to a main file AND a per-target file
 # The 'extra_file' provides an additional handler pointing to TARGET.log for easy grepping
 logger = setup_logger(
-    name="mtr_watchdog",
-    log_dir=log_directory,
-    filename="mtr_watchdog.log",
+    "mtr_watchdog",
+    log_directory,
+    "mtr_watchdog.log",
     settings=settings,
-    extra_file=f"{args.target}.log"
+    extra_file=f"{args.target}.log",
 )
 
 # -----------------------------
@@ -61,10 +61,10 @@ logger = setup_logger(
 try:
     # Pass the settings path, not a static dict, so the monitor can live-reload YAML
     monitor_target(
-        target=args.target,
-        source_ip=args.source,
-        settings_path=args.settings,
-        logger=logger,
+     ip=args.target,
+     source_ip=args.source,
+     settings=settings,
+     logger=logger,
     )
 
 except KeyboardInterrupt:
