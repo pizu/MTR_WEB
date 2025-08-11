@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import json          # To parse the output from MTR (which is in JSON format)
 import subprocess    # To run system commands (like MTR)
+from modules.utils import load_settings
 
-def run_mtr(target, source_ip=None, logger=None):
+def run_mtr(target, source_ip=None, logger=None, settings=None):
     """
     This function runs the MTR (My Traceroute) command for a single target.
 
@@ -16,15 +17,20 @@ def run_mtr(target, source_ip=None, logger=None):
     """
 
     # Build the base MTR command
-    cmd = ["mtr", "--json", "--report-cycles", "1", "--no-dns"]
+    if settings is None:
+        settings = load_settings("mtr_script_settings.yaml")
 
-    # If a source IP is provided, include it in the command
+    mtr_cfg = settings.get("mtr", {})
+    report_cycles   = int(mtr_cfg.get("report_cycles", 1))
+    packets_per     = int(mtr_cfg.get("packets_per_cycle", 10))
+    resolve_dns     = bool(mtr_cfg.get("resolve_dns", False))
+
+    cmd = ["mtr", "--json", "--report", f"--report-cycles", str(report_cycles), "-c", str(packets_per)]
+    if not resolve_dns:
+        cmd.append("-n")
     if source_ip:
         cmd += ["--address", source_ip]
-
-    # Add the target as the final part of the command
-    cmd.append(target)
-
+    cmd.append(str(target))
     try:
         # Run the MTR command
         result = subprocess.run(
