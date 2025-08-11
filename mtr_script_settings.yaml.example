@@ -117,6 +117,13 @@ interval_seconds: 60
 html_auto_refresh_seconds: 0
 log_lines_display: 50
 
+# === Graph Generation Settings ===
+graph_generation:
+  skip_unchanged: true        # don’t rebuild PNG if newer than RRD/traceroute
+  recent_safety_seconds: 120  # avoid touching very recent files still being updated
+  parallelism: 2              # small worker pool; increase carefully
+  niceness: 5                 # lower CPU priority (+5); 0 disables
+
 graph_time_ranges:
   - label: "1h"
     seconds: 3600
