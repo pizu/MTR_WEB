@@ -53,7 +53,16 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
     #  - If YAML value > 0, use it.
     #  - Else auto: enough time for packets*interval, plus margin, min 20s.
     yaml_timeout = int(mtr_cfg.get("timeout_seconds", 0))
-    timeout_s = yaml_timeout if yaml_timeout > 0 else max(20, int(packets_per * per_pkt_int) + 5)
+    if yaml_timeout > 0:
+      timeout_s = yaml_timeout
+    else:
+      # Smarter auto-timeout:
+      # base ~ packets * interval, scaled up (multiple TTLs + jitter) + margin, with a floor
+      mult    = float(mtr_cfg.get("timeout_multiplier", 4.0))
+      margin  = int(mtr_cfg.get("timeout_margin_seconds", 10))
+      floor_s = int(mtr_cfg.get("timeout_floor_seconds", 60))
+      estimate = int(packets_per * per_pkt_int * mult) + margin
+      timeout_s = max(floor_s, estimate)
 
     # Build the mtr command (NO --report, to keep JSON reliable).
     cmd = [
