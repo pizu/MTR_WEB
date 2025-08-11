@@ -127,6 +127,8 @@ retention:
   graphs_days: 7
   html_days: 10
 
+graph_cleanup_safety_seconds: 180
+
 # === Custom Logging Severity Rules - Optional ===
 log_severity_rules:
   - tag: LOSS_SPIKE
