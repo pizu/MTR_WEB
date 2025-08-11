@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ipaddress
 import json          # To parse the output from MTR (which is in JSON format)
 import subprocess    # To run system commands (like MTR)
 from modules.utils import load_settings
@@ -21,39 +22,42 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
         settings = load_settings("mtr_script_settings.yaml")
 
     mtr_cfg = settings.get("mtr", {})
-    report_cycles   = int(mtr_cfg.get("report_cycles", 1))
-    packets_per     = int(mtr_cfg.get("packets_per_cycle", 10))
-    resolve_dns     = bool(mtr_cfg.get("resolve_dns", False))
+    report_cycles = int(mtr_cfg.get("report_cycles", 1))
+    packets_per   = int(mtr_cfg.get("packets_per_cycle", 10))
+    resolve_dns   = bool(mtr_cfg.get("resolve_dns", False))
+    per_pkt_int   = float(mtr_cfg.get("per_packet_interval", 1.0))  # optional
+    timeout_s     = int(mtr_cfg.get(
+        "timeout_seconds",
+        max(20, int(report_cycles * packets_per * per_pkt_int) + 5)
+    ))
 
-    cmd = ["mtr", "--json", "--report", f"--report-cycles", str(report_cycles), "-c", str(packets_per)]
+    cmd = ["mtr", "--json", "--report", "--report-cycles", str(report_cycles), "-c", str(packets_per)]
     if not resolve_dns:
         cmd.append("-n")
+    # optional: enforce family from source
     if source_ip:
+        try:
+            fam = ipaddress.ip_address(source_ip).version
+            cmd.insert(0, "-6" if fam == 6 else "-4")
+        except Exception:
+            pass
         cmd += ["--address", source_ip]
+    # optional: pass interval between pings
+    if per_pkt_int != 1.0:
+        cmd += ["-i", str(per_pkt_int)]
+
     cmd.append(str(target))
+    if logger: logger.debug(f"MTR cmd: {' '.join(cmd)}")
+
     try:
-        # Run the MTR command
-        result = subprocess.run(
-            cmd,               # The full MTR command
-            capture_output=True,  # Capture stdout and stderr
-            text=True,            # Return output as a string
-            timeout=20            # Give up after 20 seconds if no response
-        )
-
-        # If MTR ran successfully (exit code 0)
-        if result.returncode == 0:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        if result.returncode == 0 and result.stdout.strip():
             return parse_mtr_output(result.stdout, logger)
-
-        else:
-            # MTR failed — log the error message
-            if logger:
-                logger.error(f"[MTR ERROR] {result.stderr.strip()}")
-            return []
-
-    except Exception as e:
-        # Something went wrong while running the command (e.g. command not found, timeout)
         if logger:
-            logger.exception(f"[EXCEPTION] MTR run failed: {e}")
+            logger.error(f"[MTR ERROR] rc={result.returncode} msg={result.stderr.strip()}")
+        return []
+    except Exception as e:
+        if logger: logger.exception(f"[EXCEPTION] MTR run failed: {e}")
         return []
 
 
@@ -77,26 +81,18 @@ def parse_mtr_output(output, logger=None):
     """
 
     try:
-        # Convert the JSON string into a Python dictionary
         raw = json.loads(output)
-
-        # Get the list of hops (called "hubs" in MTR JSON)
         hops = raw["report"].get("hubs", [])
-
-        # Annotate each hop with a "count" index and a fallback host name
         for i, hop in enumerate(hops):
             hop["count"] = i
             hop["host"] = hop.get("host", f"hop{i}")
-            # Ensure numeric Loss% exists
-            try:
-                hop["Loss%"] = float(hop.get("Loss%", 0))
-            except:
-                hop["Loss%"] = 0.0
-
+            # enforce numeric types for RRD
+            for k in ("Loss%", "Avg", "Best", "Last"):
+                try:
+                    hop[k] = float(hop.get(k, 0))
+                except Exception:
+                    hop[k] = 0.0
         return hops
-
     except Exception as e:
-        # If something fails while parsing
-        if logger:
-            logger.error(f"[PARSE ERROR] {e}")
+        if logger: logger.error(f"[PARSE ERROR] {e}")
         return []
