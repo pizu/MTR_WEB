@@ -120,12 +120,16 @@ log_lines_display: 50
 # === Graph Generation Settings ===
 graph_generation:
   executor: process
-  parallelism: auto      # uses os.cpu_count()
-  cpu_affinity: spread   # pin workers across CPUs
-  use_rrd_lock: true     # harmless with process; needed only if you switch to threads
+  parallelism: auto
+  cpu_affinity: spread
+  use_rrd_lock: true
   skip_unchanged: true
   recent_safety_seconds: 120
   niceness: 5
+
+  # New cadence controls
+  summary_interval_runs: 1   # build summaries every run
+  hop_interval_runs: 5       # build per-hop graphs every 5th run
 
 graph_time_ranges:
   - label: "1h"
