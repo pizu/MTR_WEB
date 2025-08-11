@@ -2,24 +2,25 @@
 """
  mtr_runner.py
 
- Single-shot runner that executes one MTR report against a target and returns
- a normalized list of hop dictionaries. It reads knobs from mtr_script_settings.yaml.
+ Single-shot runner that executes one MTR pass against a target and returns
+ a normalized list of hop dictionaries. This **compat mode** intentionally
+ avoids using `--report`/`--report-cycles` because some mtr builds emit
+ non-JSON when `--report` is present.
 
  YAML knobs (under the 'mtr' key):
-   - report_cycles (int): maps to --report-cycles N (how many snapshots per run)
-   - packets_per_cycle (int): maps to -c N (packets per snapshot)
-   - resolve_dns (bool): if false, add -n for numeric only
+   - packets_per_cycle (int): maps to -c N (packets per run)
    - per_packet_interval (float): maps to -i seconds (spacing between packets)
+   - resolve_dns (bool): if false, add -n for numeric only
    - timeout_seconds (int): hard timeout for the subprocess; if 0/missing -> auto
 
  Function run_mtr(...) deliberately runs just one cycle. The continuous loop lives
  outside (e.g., in modules/monitor.py) so you can re-read YAML each iteration.
 """
 
-# Standard library imports used by the runner
-import json            # to parse the JSON output returned by 'mtr --json'
-import subprocess      # to execute the 'mtr' command as a child process
-import ipaddress       # to detect IPv4 vs IPv6 for the provided source IP
+# --- stdlib imports ---
+import json            # Parse JSON text returned by 'mtr --json'
+import subprocess      # Execute the 'mtr' command as a child process
+import ipaddress       # Detect IPv4 vs IPv6 for a provided source IP
 
 # Project utility to load YAML settings
 from modules.utils import load_settings
@@ -27,7 +28,7 @@ from modules.utils import load_settings
 
 def run_mtr(target, source_ip=None, logger=None, settings=None):
     """
-    Run one MTR report against 'target' and return a list of hop dicts.
+    Run one mTR pass against 'target' and return a list of hop dicts.
 
     Args:
         target (str): Destination host/IP to probe.
@@ -47,26 +48,21 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
     mtr_cfg = settings.get("mtr", {})
 
     # Read each knob with sane defaults so missing YAML keys don't break the run
-    report_cycles = int(mtr_cfg.get("report_cycles", 1))            # --report-cycles
-    packets_per   = int(mtr_cfg.get("packets_per_cycle", 10))       # -c
-    resolve_dns   = bool(mtr_cfg.get("resolve_dns", False))          # add -n if False
-    per_pkt_int   = float(mtr_cfg.get("per_packet_interval", 1.0))   # -i seconds
+    packets_per = int(mtr_cfg.get("packets_per_cycle", 10))       # -c N
+    per_pkt_int = float(mtr_cfg.get("per_packet_interval", 1.0))  # -i seconds
+    resolve_dns = bool(mtr_cfg.get("resolve_dns", False))          # add -n if False
 
-    # Timeout logic: if YAML gives 0 or omits it, compute a safe automatic timeout
-    # Formula: max(20, cycles * packets * interval + 5) to cover slow/long paths
-    yaml_timeout  = int(mtr_cfg.get("timeout_seconds", 0))
-    if yaml_timeout > 0:
-        timeout_s = yaml_timeout
-    else:
-        timeout_s = max(20, int(report_cycles * packets_per * per_pkt_int) + 5)
+    # Timeout logic: 0/omitted => auto. Formula: max(20, packets * interval + 5)
+    yaml_timeout = int(mtr_cfg.get("timeout_seconds", 0))
+    timeout_s = yaml_timeout if yaml_timeout > 0 else max(20, int(packets_per * per_pkt_int) + 5)
 
-    # Build the base mtr command with JSON output and a fixed report mode
+    # -------------------------------
+    # Build the mtr command (NO --report)
+    # -------------------------------
     cmd = [
         "mtr",           # executable
         "--json",        # ask for machine-readable JSON output
-        #"--report",      # run in report mode (non-interactive, returns a summary)
-        "--report-cycles", str(report_cycles),  # how many snapshots to include
-        "-c", str(packets_per)                  # packets per snapshot
+        "-c", str(packets_per)  # number of probes to send
     ]
 
     # If we do NOT want DNS resolution, append '-n' to keep addresses numeric
@@ -81,7 +77,7 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
     if source_ip:
         try:
             fam = ipaddress.ip_address(source_ip).version  # 4 or 6
-            cmd.insert(0, "-6" if fam == 6 else "-4")      # preprend -4/-6 for clarity
+            cmd.insert(1, "-6" if fam == 6 else "-4")      # insert right after 'mtr'
         except Exception:
             # If detection fails, skip forcing the family; mtr will try to pick
             pass
@@ -98,17 +94,30 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
         # Execute the command, capture stdout/stderr as text, enforce a timeout
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
 
-        # If the process exited cleanly and produced some output, parse it
-        if res.returncode == 0 and res.stdout.strip():
-            return parse_mtr_output(res.stdout, logger)
+        # If the process exited with error, log stderr/stdout snippets and return []
+        if res.returncode != 0:
+            if logger:
+                err_snip = res.stderr.strip()[:400].replace("
+", "\n")
+                out_snip = (res.stdout or "").strip()[:200].replace("
+", "\n")
+                logger.error(f"[MTR ERROR] rc={res.returncode} stderr={err_snip} stdout={out_snip}")
+            return []
 
-        # Otherwise, log the error code and any stderr text to help diagnose
-        if logger:
-            logger.error(f"[MTR ERROR] rc={res.returncode} msg={res.stderr.strip()}")
-        return []  # return an empty hop list on failure so callers can handle it
+        # Precheck: ensure stdout looks like JSON before parsing
+        std = (res.stdout or "").lstrip()
+        if not std.startswith("{"):
+            if logger:
+                snip = std[:400].replace("
+", "\n")
+                logger.error(f"[PARSE PRECHECK] Non-JSON stdout: {snip}")
+            return []
+
+        # Parse JSON into normalized hop list
+        return parse_mtr_output(std, logger)
 
     except Exception as e:
-        # Any unexpected problem (timeout raises SubprocessError, JSON, etc.)
+        # Any unexpected problem (timeout raises SubprocessError, etc.)
         if logger:
             logger.exception(f"[EXCEPTION] MTR run failed: {e}")
         return []
@@ -131,7 +140,7 @@ def parse_mtr_output(output, logger=None):
 
         # Normalize every hop entry for downstream code (RRD, HTML, logging)
         for i, hop in enumerate(hops):
-            hop["count"] = i                           # 0-based hop index
+            hop["count"] = i                           # 0-based hop index for our system
             hop["host"] = hop.get("host", f"hop{i}")  # fallback label if missing
 
             # Convert known numeric fields to float; default to 0.0 on errors
@@ -146,5 +155,7 @@ def parse_mtr_output(output, logger=None):
     except Exception as e:
         # If JSON can't be parsed or structure is unexpected, log and return []
         if logger:
-            logger.error(f"[PARSE ERROR] {e}")
+            snippet = output[:400].replace("
+", "\n")
+            logger.error(f"[PARSE ERROR] {e}; stdout_snip={snippet}")
         return []
