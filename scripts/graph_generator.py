@@ -38,19 +38,34 @@ MAX_HOPS = settings.get("max_hops", 30)
 GRAPH_WIDTH = settings.get("graph_width", 800)
 GRAPH_HEIGHT = settings.get("graph_height", 200)
 TIME_RANGES = settings.get("graph_time_ranges", [])
-
-raw_parallelism = settings.get("graph_generation", {}).get("parallelism", "auto")
-CPU_COUNT = os.cpu_count() or 2
-PARALLELISM = CPU_COUNT if str(raw_parallelism).lower() == "auto" else int(raw_parallelism)
-
 DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
+CPU_COUNT = os.cpu_count() or 2
 GRAPH_CFG = settings.get("graph_generation", {})
-EXECUTOR_KIND = str(GRAPH_CFG.get("executor", "process")).lower()  # "process" (default) or "thread"
+
+# parse parallelism safely
+raw_parallelism = GRAPH_CFG.get("parallelism", 2)
+if isinstance(raw_parallelism, str):
+    if raw_parallelism.strip().lower() == "auto":
+        PARALLELISM = os.cpu_count() or 2
+    else:
+        try:
+            PARALLELISM = int(raw_parallelism)
+        except ValueError:
+            PARALLELISM = 2
+else:
+    try:
+        PARALLELISM = int(raw_parallelism)
+    except Exception:
+        PARALLELISM = 2
+
+EXECUTOR_KIND = str(GRAPH_CFG.get("executor", "process")).lower()
 USE_RRD_LOCK = bool(GRAPH_CFG.get("use_rrd_lock", True))
 SKIP_UNCHANGED = bool(GRAPH_CFG.get("skip_unchanged", True))
 RECENT_SAFETY_SECONDS = int(GRAPH_CFG.get("recent_safety_seconds", 120))
 NICENESS = int(GRAPH_CFG.get("niceness", 5))
+
+
 
 os.makedirs(GRAPH_DIR, exist_ok=True)
 
