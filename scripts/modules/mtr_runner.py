@@ -64,7 +64,7 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
     cmd = [
         "mtr",           # executable
         "--json",        # ask for machine-readable JSON output
-        "--report",      # run in report mode (non-interactive, returns a summary)
+        #"--report",      # run in report mode (non-interactive, returns a summary)
         "--report-cycles", str(report_cycles),  # how many snapshots to include
         "-c", str(packets_per)                  # packets per snapshot
     ]
