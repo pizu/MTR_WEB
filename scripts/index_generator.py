@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+import os
 import sys
 sys.path.insert(0, os.path.dirname(__file__))  # Allow local imports from scripts/modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "modules"))  # allow scripts/modules
 
 import yaml
+import subprocess
 from modules.utils import load_settings, setup_logger
 from modules.index_writer import generate_index_page
 
