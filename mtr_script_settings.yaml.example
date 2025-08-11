@@ -103,6 +103,12 @@ rrd:
 traceroute_directory: /opt/scripts/MTR_WEB/traces/
 
 # === Monitoring ===
+mtr:
+  report_cycles: 1        # how many report snapshots mtr takes in one run (1 = current behavior)
+  packets_per_cycle: 10   # optional: -c <N> packets per report snapshot
+  resolve_dns: false      # if true, drop -n
+runner:
+  loop_enabled: true      # if true, monitor loops forever with sleep(interval_seconds)
 interval_seconds: 60
 
 # === HTML Settings ===
