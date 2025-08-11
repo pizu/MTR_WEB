@@ -119,17 +119,13 @@ log_lines_display: 50
 
 # === Graph Generation Settings ===
 graph_generation:
-  # Concurrency:
-  executor: process         # process | thread   (process = safest)
-  parallelism: auto            # start low (2–3) | auto
-  # Thread safety (used only if executor: thread):
-  use_rrd_lock: true        # serialize rrdtool.graph() inside the process
-  # Work avoidance:
+  executor: process
+  parallelism: auto      # uses os.cpu_count()
+  cpu_affinity: spread   # pin workers across CPUs
+  use_rrd_lock: true     # harmless with process; needed only if you switch to threads
   skip_unchanged: true
   recent_safety_seconds: 120
-  # Nice level:
   niceness: 5
-  cpu_affinity: none   # none | spread
 
 graph_time_ranges:
   - label: "1h"
