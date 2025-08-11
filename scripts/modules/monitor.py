@@ -1,78 +1,111 @@
 #!/usr/bin/env python3
-import os
-import time
-from deepdiff import DeepDiff  # Library to compare previous and current hop paths
+"""
+monitor.py
 
-# Import modular functions
+Watches a single target IP/host in a loop:
+- runs one MTR cycle per iteration (via run_mtr)
+- detects hop-path changes and loss changes
+- updates the main and per-hop RRDs every iteration
+- saves traceroute + JSON when something changes
+- logs with severity based on simple rules
+
+Note: this version accepts a static `settings` dict. If you want live reload of
+YAML each cycle, pass a settings *path* and call `load_settings(...)` inside the loop.
+"""
+
+import os               # filesystem paths (RRD locations, etc.)
+import time             # sleeping between iterations
+from deepdiff import DeepDiff  # diff previous vs current hop path lists
+
+# Import modular functions (keeps this file focused on orchestration)
 from modules.mtr_runner import run_mtr
 from modules.rrd_handler import init_rrd, init_per_hop_rrds, update_rrd
 from modules.trace_exporter import save_trace_and_json
 from modules.severity import evaluate_severity_rules, hops_changed
 
+
 def monitor_target(ip, source_ip, settings, logger):
     """
-    Main loop that monitors a given IP using MTR.
-    Updates RRD files and logs changes in path or loss.
+    Main monitoring function for a single target.
+
+    Args:
+        ip (str): target IP/hostname to monitor.
+        source_ip (str|None): optional source address for MTR (passed through).
+        settings (dict): global settings loaded from YAML.
+        logger (logging.Logger): project logger instance.
     """
 
-    # Setup paths and configs
-    rrd_dir = settings.get("rrd_directory", "rrd")
-    log_directory = settings.get("log_directory", "/tmp")
-    interval = settings.get("interval_seconds", 60)
-    severity_rules = settings.get("log_severity_rules", [])
+    # -------------------------------
+    # Resolve paths and core settings
+    # -------------------------------
+    rrd_dir = settings.get("rrd_directory", "rrd")         # where the .rrd files live
+    log_directory = settings.get("log_directory", "/tmp")  # where debug logs go
+    interval = settings.get("interval_seconds", 60)         # seconds between cycles
+    severity_rules = settings.get("log_severity_rules", [])  # optional rules for tagging
 
-    # Main RRD file for the full hop sequence
+    # Main RRD file holds aggregated hops (multi-DS). Per-hop RRDs are separate.
     rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
     debug_rrd_log = os.path.join(log_directory, "rrd_debug.log")
 
-    # Ensure RRDs exist
-    os.makedirs(rrd_dir, exist_ok=True)
-    init_rrd(rrd_path, settings, logger)
-    init_per_hop_rrds(ip, settings, logger)
+    # Ensure destination directories/rrds exist before entering the loop
+    os.makedirs(rrd_dir, exist_ok=True)         # create RRD dir if missing
+    init_rrd(rrd_path, settings, logger)        # create/validate the main RRD
+    init_per_hop_rrds(ip, settings, logger)     # create/validate per-hop RRDs
 
-    # Keep track of last known state
-    prev_hops = []
-    prev_loss_state = {}
+    # Keep last iteration's state so we can detect changes
+    prev_hops = []            # previous hop list (for path change diffing)
+    prev_loss_state = {}      # map: hop_index -> loss% (last seen)
 
     logger.info(f"[{ip}] Monitoring loop started — running MTR")
 
-    # Main loop: run MTR every X seconds
+    # -------------------
+    # Continuous run loop
+    # -------------------
     while True:
+        # 1) Execute a single MTR cycle and get a normalized list of hops
         hops = run_mtr(ip, source_ip, logger)
 
+        # If the runner failed (timeout, unreachable, parsing error), wait and retry
         if not hops:
             logger.warning(f"[{ip}] MTR returned no data — target unreachable or command failed")
             time.sleep(interval)
             continue
 
-        # Detect path or loss changes
+        # 2) Change detection
+        # ------------------
+        # (a) Hop path changes: did any hop host label change position/value?
         hop_path_changed = hops_changed(prev_hops, hops)
+
+        # (b) Loss changes: build current loss map for hops with >0% loss
         curr_loss_state = {
             h.get("count"): round(h.get("Loss%", 0), 2)
             for h in hops if h.get("Loss%", 0) > 0
         }
         loss_changed = curr_loss_state != prev_loss_state
 
-        # If hop path changed, log the diff
+        # 3) If hop path changed, compute and log a human-readable diff
         if hop_path_changed:
             diff = DeepDiff(
-                [h.get("host") for h in prev_hops],
-                [h.get("host") for h in hops],
-                ignore_order=False
+                [h.get("host") for h in prev_hops],  # previous hop labels ordered
+                [h.get("host") for h in hops],       # current hop labels ordered
+                ignore_order=False                    # order matters in traceroute
             )
+            # Build a context dict for severity rules (you can extend this over time)
             context = {
                 "hop_changed": True,
                 "hop_added": bool(diff.get("iterable_item_added")),
                 "hop_removed": bool(diff.get("iterable_item_removed")),
             }
+            # For each value change (e.g., hop[2] changed from A to B), log with a tag/level
             for key, value in diff.get("values_changed", {}).items():
-                hop_index = key.split("[")[-1].rstrip("]")
+                hop_index = key.split("[")[-1].rstrip("]")  # extract index from e.g. 'root[2]'
                 tag, level = evaluate_severity_rules(severity_rules, context)
-                log_fn = getattr(logger, level.lower(), logger.info) if tag and level else logger.info
+                # Choose the appropriate logger method; default to info if level missing
+                log_fn = getattr(logger, level.lower(), logger.info) if tag and isinstance(level, str) else logger.info
                 msg = f"[{ip}] Hop {hop_index} changed from {value.get('old_value')} to {value.get('new_value')}"
                 log_fn(f"[{tag}] {msg}" if tag else msg)
 
-        # If loss state changed, log it
+        # 4) If loss state changed, log each hop's current loss with previous reference
         if loss_changed:
             for hop_num, loss in curr_loss_state.items():
                 context = {
@@ -81,13 +114,16 @@ def monitor_target(ip, source_ip, settings, logger):
                     "hop_changed": hop_path_changed,
                 }
                 tag, level = evaluate_severity_rules(severity_rules, context)
-                log_fn = getattr(logger, level.lower(), logger.warning if loss > 0 else logger.info) if isinstance(level, str) else (logger.warning if loss > 0 else logger.info)
+                # Default to warning when there's loss; info when cleared/zero
+                default_fn = logger.warning if loss > 0 else logger.info
+                log_fn = getattr(logger, level.lower(), default_fn) if isinstance(level, str) else default_fn
                 msg = f"[{ip}] Loss at hop {hop_num}: {loss}% (prev: {context['prev_loss']}%)"
                 log_fn(f"[{tag}] {msg}" if tag else msg)
 
-        # Always update RRD, even if no changes
+        # 5) Update RRDs every iteration (even if nothing changed)
         update_rrd(rrd_path, hops, ip, settings, debug_rrd_log)
 
+        # 6) Persist traceroute + hop map only when something changed (noise control)
         if hop_path_changed or loss_changed:
             logger.debug(f"[{ip}] Parsed hops: {[ (h.get('count'), h.get('host'), h.get('Avg')) for h in hops ]}")
             save_trace_and_json(ip, hops, settings, logger)
@@ -95,7 +131,7 @@ def monitor_target(ip, source_ip, settings, logger):
         else:
             logger.debug(f"[{ip}] No change detected — {len(hops)} hops parsed. RRD still updated.")
 
-        # Sleep before next probe
+        # 7) Prepare for next cycle and sleep
         prev_hops = hops
         prev_loss_state = curr_loss_state
-        time.sleep(interval)
+        time.sleep(interval)  # sleep the configured interval and repeat
