@@ -46,9 +46,8 @@ PARALLELISM = CPU_COUNT if str(raw_parallelism).lower() == "auto" else int(raw_p
 DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
 GRAPH_CFG = settings.get("graph_generation", {})
-PARALLELISM = int(GRAPH_CFG.get("parallelism", 2))                 # number of workers
 EXECUTOR_KIND = str(GRAPH_CFG.get("executor", "process")).lower()  # "process" (default) or "thread"
-USE_RRD_LOCK = bool(GRAPH_CFG.get("use_rrd_lock", True))           # lock rrdtool.graph() when threading
+USE_RRD_LOCK = bool(GRAPH_CFG.get("use_rrd_lock", True))
 SKIP_UNCHANGED = bool(GRAPH_CFG.get("skip_unchanged", True))
 RECENT_SAFETY_SECONDS = int(GRAPH_CFG.get("recent_safety_seconds", 120))
 NICENESS = int(GRAPH_CFG.get("niceness", 5))
