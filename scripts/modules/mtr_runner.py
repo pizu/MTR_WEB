@@ -34,7 +34,8 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
     cmd = ["mtr", "--json", "--report", "--report-cycles", str(report_cycles), "-c", str(packets_per)]
     if not resolve_dns:
         cmd.append("-n")
-    # optional: enforce family from source
+    if per_pkt_int != 1.0:
+        cmd += ["-i", str(per_pkt_int)]
     if source_ip:
         try:
             fam = ipaddress.ip_address(source_ip).version
@@ -42,19 +43,14 @@ def run_mtr(target, source_ip=None, logger=None, settings=None):
         except Exception:
             pass
         cmd += ["--address", source_ip]
-    # optional: pass interval between pings
-    if per_pkt_int != 1.0:
-        cmd += ["-i", str(per_pkt_int)]
-
     cmd.append(str(target))
     if logger: logger.debug(f"MTR cmd: {' '.join(cmd)}")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
-        if result.returncode == 0 and result.stdout.strip():
-            return parse_mtr_output(result.stdout, logger)
-        if logger:
-            logger.error(f"[MTR ERROR] rc={result.returncode} msg={result.stderr.strip()}")
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        if res.returncode == 0 and res.stdout.strip():
+            return parse_mtr_output(res.stdout, logger)
+        if logger: logger.error(f"[MTR ERROR] rc={res.returncode} msg={res.stderr.strip()}")
         return []
     except Exception as e:
         if logger: logger.exception(f"[EXCEPTION] MTR run failed: {e}")
@@ -82,16 +78,13 @@ def parse_mtr_output(output, logger=None):
 
     try:
         raw = json.loads(output)
-        hops = raw["report"].get("hubs", [])
+        hops = raw.get("report", {}).get("hubs", [])
         for i, hop in enumerate(hops):
             hop["count"] = i
             hop["host"] = hop.get("host", f"hop{i}")
-            # enforce numeric types for RRD
             for k in ("Loss%", "Avg", "Best", "Last"):
-                try:
-                    hop[k] = float(hop.get(k, 0))
-                except Exception:
-                    hop[k] = 0.0
+                try: hop[k] = float(hop.get(k, 0))
+                except: hop[k] = 0.0
         return hops
     except Exception as e:
         if logger: logger.error(f"[PARSE ERROR] {e}")
