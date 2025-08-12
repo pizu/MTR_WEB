@@ -11,7 +11,7 @@ targets:
   - ip: 1.1.1.1
     source_ip: null
     description: Test 1.1.1.1
-    paused: true # will not be monitored
+    paused: true # will not be monitored and old data will not be deleted.
 
 mtr_settings:
   count: 10
