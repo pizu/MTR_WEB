@@ -1,195 +1,233 @@
-# MTR_WEB Monitoring Suite
+# MTR_WEB — Multi-Hop Network Monitoring & Visualization
 
-MTR_WEB is a Python-based monitoring system that continuously runs MTR (`mtr --json`) for a set of public IPs. It collects hop metrics (loss, latency, etc.), stores them in RRD files, and generates dynamic HTML dashboards and daily logs for network path analysis.
-
----
-
-## 📦 Project Structure
-
-```
-MTR_WEB/
-├── html/                       # HTML output for dashboards
-├── scripts/
-│   ├── controller.py          # Main orchestrator: manages mtr_monitor.py for each IP
-│   ├── mtr_monitor.py         # Collects and logs MTR data, updates RRDs
-│   ├── graph_generator.py     # Creates graphs from RRD files
-│   ├── html_generator.py      # Generates per-target HTML pages
-│   ├── index_generator.py     # Generates master index page
-│   └── utils.py               # Shared settings/logger utilities
-├── mtr_targets.yaml           # List of monitored targets and descriptions
-├── mtr_script_settings.yaml   # Global settings: intervals, paths, thresholds
-└── README.md
-```
+MTR_WEB is a Python-based network monitoring system that continuously measures latency, packet loss, and hop changes to multiple IP targets using [`mtr`](https://github.com/traviscross/mtr).  
+It stores results in [RRDTool](https://oss.oetiker.ch/rrdtool/) databases and generates **fully static HTML dashboards** with summary and per-hop graphs, traceroutes, and recent logs.
 
 ---
 
-## 🚀 Installation
+## 📐 Architecture Overview
 
-1. **Install dependencies** (Python 3.8+ recommended):
+      ┌────────────────────┐
+      │  mtr_targets.yaml  │
+      └─────────┬──────────┘
+                │
+                ▼
+      ┌────────────────────┐
+      │   controller.py    │
+      │ (watches targets & │
+      │ settings, spawns   │
+      │ mtr_watchdog.py)   │
+      └─────────┬──────────┘
+                │
+    ┌───────────┴─────────────────────────┐
+    │ One process per target:              │
+    │ mtr_watchdog.py → monitor.py         │
+    │   • Runs mtr_runner.py               │
+    │   • Detects hop/loss changes         │
+    │   • Updates RRD (rrd_handler.py)     │
+    │   • Saves traceroute (trace_exporter)│
+    └───────────┬─────────────────────────┘
+                │
+    ┌───────────┴──────────────────────┐
+    │ graph_generator.py               │
+    │   • Uses graph_jobs.py,           │
+    │     graph_workers.py              │
+    │   • Generates summary & per-hop   │
+    │     PNG graphs from RRD           │
+    └───────────┬──────────────────────┘
+                │
+    ┌───────────┴──────────────────────┐
+    │ html_generator.py                │
+    │   • target_html.py                │
+    │   • per_hop_html.py               │
+    │ index_generator.py                │
+    │   • index_writer.py               │
+    └───────────┬──────────────────────┘
+                │
+      ┌─────────┴──────────┐
+      │   Static HTML +    │
+      │    Graph Images    │
+      │   (served via web) │
+      └────────────────────┘
 
-```bash
-sudo apt update
-sudo apt install python3 python3-pip fping mtr rrdtool
-pip3 install deepdiff pyyaml
-```
-
-2. **Clone this repo** and prepare the directory structure:
-
-```bash
-git clone https://github.com/your-org/MTR_WEB.git
-cd MTR_WEB
-mkdir -p html rrd logs traceroute
-```
-
-3. **Edit configuration files**:
-- `mtr_targets.yaml`
-- `mtr_script_settings.yaml`
 
 ---
 
-## ⚙️ Configuration
+## 📂 Project Overview
 
-### `mtr_targets.yaml`
+scripts/ # Main scripts for monitoring, graphing, HTML generation, cleanup
+scripts/modules/ # Core functional modules
+scripts/modules/html_builder/ # Per-target and per-hop HTML builders
+mtr_script_settings.yaml # Main configuration (paths, intervals, graph settings, retention)
+mtr_targets.yaml # List of monitored targets
+html/ # Generated static dashboard (index + per-target pages)
+rrd/ # RRD databases for each target & hop
+traceroute/ # Saved traceroute text & JSON hop maps
+logs/ # Per-script and per-target logs
 
-This file defines the list of IPs to monitor and optional settings per target.
 
+---
+
+## ✨ Features
+
+- **Multi-target monitoring** with one process per target, managed by `controller.py`
+- **Traceroute change detection** with detailed before/after logging
+- **Packet loss detection** per hop
+- **RRDTool storage** with dynamic schema based on `max_hops`
+- **Graph generation**:
+  - Summary graphs (all hops in one)
+  - Per-hop graphs
+  - Multiple configurable time ranges
+- **Static HTML** output:
+  - `index.html` overview dashboard
+  - `<ip>.html` main page per target
+  - `<ip>_hops.html` per-hop detailed view
+- **Configurable retention** cleanup for RRDs, graphs, logs, traceroutes, and HTML
+- **Pause monitoring** for a target without deleting it (`paused: true` in `mtr_targets.yaml`)
+- **Reachability check** with `fping` on dashboard (optional)
+
+---
+
+## ⚙️ Configuration Files
+
+### 1. `mtr_script_settings.yaml`
+Controls paths, intervals, graph parameters, RRD schema, and retention.
+
+Example:
 ```yaml
-targets:
-  - ip: 8.8.8.8
-    source_ip: null              # Optional: use specific source interface
-    description: Google DNS
+log_directory: "logs"
+rrd_directory: "rrd"
+graph_output_directory: "html/graphs"
+traceroute_directory: "traceroute"
 
-  - ip: 1.1.1.1
-    source_ip: 192.168.1.10      # Optional source IP
-    description: Cloudflare
-```
-
-### `mtr_script_settings.yaml`
-
-This is the global settings file for intervals, paths, and thresholds.
-
-```yaml
-log_directory: logs
-rrd_directory: rrd
-traceroute_directory: traceroute
 interval_seconds: 60
 max_hops: 30
-loss_threshold: 10              # % packet loss to trigger alert
-enable_fping_check: true
-retention_days: 30              # Optional: for log/graph cleanup
-html_log_lines: 100             # Show latest X log lines in HTML
+
+graph_time_ranges:
+  - label: "15m"
+    seconds: 900
+  - label: "1h"
+    seconds: 3600
+  - label: "24h"
+    seconds: 86400
+
+rrd:
+  step: 60
+  heartbeat: 120
+  data_sources:
+    - name: avg
+      type: GAUGE
+      min: 0
+      max: U
+    - name: last
+      type: GAUGE
+      min: 0
+      max: U
+    - name: best
+      type: GAUGE
+      min: 0
+      max: U
+    - name: loss
+      type: GAUGE
+      min: 0
+      max: 100
+  rras:
+    - cf: AVERAGE
+      xff: 0.5
+      step: 1
+      rows: 2016
+
 ```
+### 2. `mtr_script_settings.yaml`
 
----
-
-## ▶️ How to Run
-
-Start the controller to monitor and manage processes:
-
-```bash
-python3 scripts/controller.py
+Example:
+```yaml
+targets:
+  - ip: "8.8.8.8"
+    description: "Google DNS"
+    paused: false
+  - ip: "1.1.1.1"
+    description: "Cloudflare DNS"
+    paused: true
 ```
+paused: true = target is skipped without being removed from config.
 
-This will:
-- Watch `mtr_targets.yaml` for changes
-- Start/stop `mtr_monitor.py` per IP
-- Collect MTR stats and update RRDs
-- Generate HTML and logs automatically
-
-You can also generate components manually:
-
-```bash
-python3 scripts/graph_generator.py
-python3 scripts/html_generator.py
-python3 scripts/index_generator.py
 ```
+🛠️ Installation Requirements
+OS: Rocky Linux / RHEL / CentOS / Fedora / Debian / Ubuntu
 
----
+Software:
+Python 3.7+
+mtr (network probing)
+rrdtool (round-robin database)
+Python bindings for RRDTool (python-rrdtool)
+fping (optional, for dashboard reachability check)
+Python modules: pyyaml, deepdiff
 
-## 📊 Example Outputs
-
-### HTML
-
-Open `html/index.html` in your browser to view:
-
-- A table of all monitored targets
-- Per-IP pages with:
-  - Traceroute hop list
-  - RRD graphs (loss, avg latency, best/worst)
-  - Description and last seen status
-  - Recent logs (packet loss, hop changes)
-
-### Logs
-
-Each script writes to its own file in the `logs/` directory.
-
-Example: `logs/mtr_monitor.log`
-
-```text
-2025-07-25 19:20:12,432 [INFO] Started monitoring 8.8.8.8
-2025-07-25 19:21:13,210 [WARNING] 8.8.8.8 - Hop 4 (203.0.113.5) increased loss: 15%
-2025-07-25 19:22:05,872 [INFO] Hop path changed (diff):
-- 4: 203.0.113.5
-+ 4: 198.51.100.23
 ```
+### Install on Rocky Linux / RHEL / CentOS
 
----
+# Enable EPEL for extra packages
+sudo yum install -y epel-release
 
-## ⏱️ Cron Job Examples
+# Install required system packages
+sudo yum install -y mtr rrdtool python3 python3-pip python3-rrdtool fping
 
-To automate reporting and cleanup tasks, you can schedule them using cron.
+# Install Python dependencies
+pip3 install pyyaml deepdiff
 
-### Daily HTML Refresh at 7 AM:
-```
-0 7 * * * /usr/bin/python3 /opt/scripts/MTR_WEB/scripts/html_generator.py
-0 7 * * * /usr/bin/python3 /opt/scripts/MTR_WEB/scripts/index_generator.py
-```
 
-### Daily RRD Graph Generation:
-```
-*/10 * * * * /usr/bin/python3 /opt/scripts/MTR_WEB/scripts/graph_generator.py
-```
+### Install on Debian / Ubuntu
 
-### Optional: Daily Log or Data Cleanup (if implemented):
-```
-30 1 * * * /usr/bin/python3 /opt/scripts/MTR_WEB/scripts/cleanup.py
-```
+sudo apt update
+sudo apt install -y mtr-tiny rrdtool python3 python3-pip python3-rrdtool fping
+pip3 install pyyaml deepdiff
 
----
+### Usage
+## Start the monitoring controller
+cd /opt/scripts/MTR_WEB/scripts
+python3 controller.py
 
-## 📈 RRD Graph Details
+## Generate graphs periodically
+python3 graph_generator.py
 
-Each target has a single RRD file that includes all hop metrics:
+## Generate HTML pages
+python3 html_generator.py
+python3 index_generator.py
 
-- **File format**: `rrd/<target_ip>.rrd`
-- **Data Sources (DS)**:
-  - hop{N}_loss (packet loss %)
-  - hop{N}_avg (average latency)
-  - hop{N}_last (last recorded latency)
-  - hop{N}_best (lowest latency)
+## Cleanup
+python3 cleanup.py
 
-### Example RRDTool command to inspect a file:
+### Suggested Cron Jobs
 
-```bash
-rrdtool info rrd/8.8.8.8.rrd
-```
+*/2 * * * *  cd /opt/scripts/MTR_WEB/scripts && /usr/bin/python3 graph_generator.py
+*/3 * * * *  cd /opt/scripts/MTR_WEB/scripts && /usr/bin/python3 html_generator.py && /usr/bin/python3 index_generator.py
+7  * * * *   cd /opt/scripts/MTR_WEB/scripts && /usr/bin/python3 cleanup.py
 
-### Example: Graph for loss over the last 12 hours
 
-```bash
-rrdtool graph loss.png \
-  --start -43200 --end now \
-  --title "Packet Loss - 8.8.8.8" \
-  DEF:hop0=rrd/8.8.8.8.rrd:hop0_loss:AVERAGE \
-  LINE2:hop0#FF0000:"Hop 0"
-```
+### Example Apache Virtual
 
-Use `graph_generator.py` to automate graph creation for all hops and time ranges.
+<VirtualHost *:80>
+    ServerName mtr.example.com
+    DocumentRoot /opt/scripts/MTR_WEB/html
 
----
+    <Directory /opt/scripts/MTR_WEB/html>
+        Options Indexes FollowSymLinks
+        AllowOverride None
+        Require all granted
+    </Directory>
+</VirtualHost>
 
-## 🛠 Author & License
 
-Developed by [Pizu]  
-License: MIT
+### Output Structure
+Logs: logs/ (per-script + per-target)
+RRDs: rrd/
+Graphs: html/graphs/
+Traceroutes: traceroute/
+HTML Pages: html/
 
+### Screenshots
+
+### Contributing
+Pull requests are welcome.
+For major changes, please open an issue first to discuss.
