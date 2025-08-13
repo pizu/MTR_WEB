@@ -6,7 +6,6 @@ import re
 import html
 from datetime import datetime
 from modules.utils import load_settings, setup_logger
-from modules.html_builder.per_hop_html import generate_per_hop_html
 from modules.rrd_metrics import get_rrd_metrics
 
 def generate_target_html(ip, description, hops, settings):
@@ -163,7 +162,6 @@ function filterLogs() {
             f.write("</tbody></table><hr><p><a href='index.html'>Back to index</a></p></body></html>")
 
         logger.info(f"Generated HTML for {ip}")
-        generate_per_hop_html(ip, hops, description, settings)
 
     except Exception as e:
         logger.exception(f"[{ip}] Failed to generate target HTML")
