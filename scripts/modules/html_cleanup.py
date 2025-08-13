@@ -13,21 +13,25 @@ def remove_orphan_html_files(html_dir, valid_ips, logger):
         logger (logging.Logger): Logger instance to use for logging.
     """
     try:
-        all_html = [
-            f for f in os.listdir(html_dir)
-            if f.endswith(".html") and f != "index.html"
-        ]
-
-        for html_file in all_html:
-            # hard-delete any per-hop landing pages
+        all_html = [f for f in os.listdir(html_dir) if f.endswith(".html") and f != "index.html"]
+        # remove any per-hop landing pages
+        for html_file in list(all_html):
             if html_file.endswith("_hops.html"):
                 os.remove(os.path.join(html_dir, html_file))
                 logger.info(f"Removed per-hop HTML: {html_file}")
-                continue
-
+        # remove pages for IPs no longer present
+        for html_file in all_html:
             ip_clean = html_file.replace(".html", "")
             if ip_clean not in valid_ips:
                 os.remove(os.path.join(html_dir, html_file))
                 logger.info(f"Removed stale HTML file: {html_file}")
+
+        # also purge old per-hop PNGs
+        graphs_dir = os.path.join(html_dir, "graphs")
+        if os.path.isdir(graphs_dir):
+            for f in os.listdir(graphs_dir):
+                if "_hop" in f and f.endswith(".png"):
+                    os.remove(os.path.join(graphs_dir, f))
+                    logger.info(f"Removed per-hop PNG: {f}")
     except Exception as e:
-        logger.warning(f"Failed to clean orphan HTML files: {e}")
+        logger.warning(f"Failed to clean orphan HTML/graph files: {e}")
