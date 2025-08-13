@@ -23,6 +23,7 @@ from modules.mtr_runner import run_mtr
 from modules.rrd_handler import init_rrd, init_per_hop_rrds, update_rrd
 from modules.trace_exporter import save_trace_and_json
 from modules.severity import evaluate_severity_rules, hops_changed
+from trace_exporter import save_trace_and_json, update_hop_labels_only
 
 UNSTABLE_THRESHOLD = 0.45   # top host <45% -> label as "varies (...)"
 TOPK_TO_SHOW       = 3      # show up to 3 examples
@@ -204,6 +205,7 @@ def monitor_target(ip, source_ip, settings, logger):
 
         # 5) Update RRDs every iteration (even if nothing changed)
         update_rrd(rrd_path, hops, ip, settings, debug_rrd_log)
+        update_hop_labels_only(ip, hops, settings, logger)
         stats_path, hops_json_path = _label_paths(ip, settings)
         stats = _load_stats(stats_path)
         stats = _update_stats_with_snapshot(stats, hops)
