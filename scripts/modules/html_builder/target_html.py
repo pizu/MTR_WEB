@@ -142,8 +142,6 @@ function filterLogs() {
                         f.write(f"<img src='graphs/{filename}' alt='{metric} {label}' loading='lazy'></div>")
                 f.write("</div></div></div>")
 
-            f.write("<h4>Per-Hop Graphs</h4>")
-            f.write(f"<p><a href='{ip}_hops.html' target='_blank'><button>Open Per-Hop Graphs</button></a></p>")
 
             f.write("<h3>Recent Logs</h3>")
             f.write("<input type='text' id='logFilter' placeholder='Filter logs...' style='width:100%;margin-bottom:10px;padding:5px;' onkeyup='filterLogs()'>")
