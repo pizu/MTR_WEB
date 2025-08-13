@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import json
 
 # ---- tuning knobs ----
@@ -123,3 +124,32 @@ def save_trace_and_json(ip, hops, settings, logger):
 
     # 3) label stats + <ip>_hops.json
     update_hop_labels_only(ip, hops, settings, logger)
+
+def get_available_hops(ip, graph_dir="html/graphs", traceroute_dir="traceroute"):
+    """
+    Returns a sorted list of hop indices for a target.
+    Prefers traceroute/<ip>_hops.json (new flow). Falls back to graph PNGs.
+    """
+    # 1) New flow: read stabilized labels
+    json_path = os.path.join(traceroute_dir, f"{ip}_hops.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                arr = json.load(f)
+            hops = [int(item["count"]) for item in arr if isinstance(item, dict) and "count" in item]
+            return sorted(set(hops))
+        except Exception:
+            pass
+
+    # 2) Legacy fallback: parse filenames like "<ip>_hop{N}_*.png"
+    hops = set()
+    if os.path.isdir(graph_dir):
+        pat = re.compile(rf"^{re.escape(ip)}_hop(\d+)_")
+        for fname in os.listdir(graph_dir):
+            m = pat.match(fname)
+            if m:
+                try:
+                    hops.add(int(m.group(1)))
+                except ValueError:
+                    continue
+    return sorted(hops)
