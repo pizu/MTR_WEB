@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
-
 # modules/index_writer.py
+#
+# This version removes the Hop0 and Total columns from the index page.
+# It keeps the columns: IP, Description, Status, Last Seen.
+#
+# It also avoids calling get_rrd_metrics() for the index for speed/clarity.
 
 import os
 from datetime import datetime
-from modules.rrd_metrics import get_rrd_metrics
 from modules.fping_status import get_fping_status
 
 def generate_index_page(targets, settings, logger):
     """
     Builds the index.html page from the list of targets and settings.
+    Columns: IP | Description | Status | Last Seen
     """
-    HTML_DIR = "html"
-    LOG_DIR = settings.get("log_directory", "logs")
-    RRD_DIR = settings.get("rrd_directory", "rrd")
-    ENABLE_FPING = settings.get("enable_fping_check", True)
-    FPING_PATH = settings.get("fping_path", None)
+    HTML_DIR        = "html"
+    LOG_DIR         = settings.get("log_directory", "logs")
+    ENABLE_FPING    = settings.get("enable_fping_check", True)
+    FPING_PATH      = settings.get("fping_path", None)
     REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
-    DATA_SOURCES = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
     index_path = os.path.join(HTML_DIR, "index.html")
     os.makedirs(HTML_DIR, exist_ok=True)
 
     try:
-        with open(index_path, "w") as f:
-            # Header
+        with open(index_path, "w", encoding="utf-8") as f:
+            # Header + optional auto-refresh
             f.write("<html><head><meta charset='utf-8'>")
             if REFRESH_SECONDS > 0:
                 f.write(f"<meta http-equiv='refresh' content='{REFRESH_SECONDS}'>")
@@ -43,33 +45,38 @@ def generate_index_page(targets, settings, logger):
 </head><body>
 <h2>MTR Monitoring Dashboard</h2>
 <table>
-<tr><th>IP</th><th>Description</th><th>Status</th><th>Last Seen</th><th>Hop0</th><th>Total</th></tr>
+<tr><th>IP</th><th>Description</th><th>Status</th><th>Last Seen</th></tr>
 """)
 
             for target in targets:
-                ip = target["ip"]
+                ip   = target["ip"]
                 desc = target.get("description", "")
                 log_path = os.path.join(LOG_DIR, f"{ip}.log")
 
-                # Determine last seen
+                # Determine "Last Seen" by scanning logs for the last "MTR RUN" line
                 last_seen = "Never"
                 if os.path.exists(log_path):
-                    with open(log_path) as lf:
-                        lines = [l for l in lf if "MTR RUN" in l]
-                        if lines:
-                            last_seen = lines[-1].split("]")[0].strip("[")
+                    try:
+                        with open(log_path, encoding="utf-8") as lf:
+                            lines = [l for l in lf if "MTR RUN" in l]
+                            if lines:
+                                # Expect format like: "2025-08-01 12:34:56,789 [INFO] MTR RUN ..."
+                                last_seen = lines[-1].split("]")[0].strip("[")
+                    except Exception as e:
+                        logger.warning(f"Failed reading last_seen from {log_path}: {e}")
 
-                # Determine reachability
+                # Determine reachability status (optional fping check)
                 status = get_fping_status(ip, FPING_PATH) if ENABLE_FPING else "Unknown"
 
-                # RRD metrics
-                hop0, avg = get_rrd_metrics(ip, RRD_DIR, DATA_SOURCES)
-
-                def fmt(metrics):
-                    return ", ".join(f"{k}: {v}" for k, v in metrics.items()) if metrics else "-"
-
-                f.write(f"<tr><td><a href='{ip}.html'>{ip}</a></td><td>{desc}</td><td>{status}</td><td>{last_seen}</td>")
-                f.write(f"<td>{fmt(hop0)}</td><td>{fmt(avg)}</td></tr>\n")
+                # Row with link to the target page
+                f.write(
+                    f"<tr>"
+                    f"<td><a href='{ip}.html'>{ip}</a></td>"
+                    f"<td>{desc}</td>"
+                    f"<td>{status}</td>"
+                    f"<td>{last_seen}</td>"
+                    f"</tr>\n"
+                )
 
             f.write(f"""</table>
 <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — Auto-refresh: {'enabled' if REFRESH_SECONDS > 0 else 'disabled'}</p>
