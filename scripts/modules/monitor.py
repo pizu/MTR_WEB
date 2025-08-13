@@ -14,6 +14,7 @@ YAML each cycle, pass a settings *path* and call `load_settings(...)` inside the
 """
 
 import os               # filesystem paths (RRD locations, etc.)
+import json
 import time             # sleeping between iterations
 from deepdiff import DeepDiff  # diff previous vs current hop path lists
 
@@ -23,6 +24,87 @@ from modules.rrd_handler import init_rrd, init_per_hop_rrds, update_rrd
 from modules.trace_exporter import save_trace_and_json
 from modules.severity import evaluate_severity_rules, hops_changed
 
+UNSTABLE_THRESHOLD = 0.45   # top host <45% -> label as "varies (...)"
+TOPK_TO_SHOW       = 3      # show up to 3 examples
+MAJORITY_WINDOW    = 200    # soft cap on samples kept per hop
+STICKY_MIN_WINS    = 3      # hysteresis to avoid flip-flop
+IGNORE_HOSTS       = set()  # keep ???; add "_gateway" here if you want to ignore it
+
+def _label_paths(ip, settings):
+    trace_dir = settings.get("traceroute_directory", "traceroute")
+    os.makedirs(trace_dir, exist_ok=True)
+    stem = os.path.join(trace_dir, ip)
+    return stem + "_hops_stats.json", stem + "_hops.json"
+
+def _load_stats(stats_path):
+    try:
+        return json.loads(open(stats_path, encoding="utf-8").read())
+    except Exception:
+        return {}
+
+def _save_stats(stats_path, stats):
+    open(stats_path, "w", encoding="utf-8").write(json.dumps(stats, indent=2))
+
+def _update_stats_with_snapshot(stats, hops):
+    # hops: list of dicts from run_mtr(); we keep host counts per hop index
+    for h in hops:
+        hop = str(int(h.get("count", 0)))
+        host = h.get("host")
+        if host is None:  # allow '???'
+            continue
+        s = stats.setdefault(hop, {"_order": [], "last": None, "wins": 0})
+        if host not in s:
+            s[host] = 0
+            s["_order"].insert(0, host)
+        s[host] += 1
+        # decay to stay within window
+        total = sum(v for k, v in s.items() if isinstance(v, int))
+        if total > MAJORITY_WINDOW:
+            for key in list(s["_order"])[::-1]:
+                if isinstance(s.get(key), int) and s[key] > 0:
+                    s[key] -= 1
+                    if s[key] == 0:
+                        del s[key]
+                        s["_order"] = [x for x in s["_order"] if x != key]
+                    break
+        # sticky
+        modal = max((k for k in s if isinstance(s.get(k), int)), key=lambda k: s[k], default=None)
+        cur = s.get("last")
+        if cur is None:
+            s["last"] = modal
+            s["wins"] = 1
+        elif modal == cur:
+            s["wins"] = min(s.get("wins", 0) + 1, STICKY_MIN_WINS)
+        else:
+            s["wins"] = s.get("wins", 0) - 1
+            if s["wins"] <= 0:
+                s["last"] = modal
+                s["wins"] = 1
+    return stats
+
+def _decide_label_per_hop(stats, hops_json_path):
+    labels = {}
+    out = []
+    for hop_str, s in sorted(stats.items(), key=lambda x: int(x[0])):
+        # collect counts incl. '???' (we do NOT filter it out)
+        items = [(k, s[k]) for k in s if isinstance(s.get(k), int) and k not in IGNORE_HOSTS]
+        total = sum(c for _, c in items)
+        if total == 0:
+            continue
+        items.sort(key=lambda kv: -kv[1])
+        top_host, top_count = items[0]
+        share = top_count / total
+        if share < UNSTABLE_THRESHOLD and len(items) >= 2:
+            sample = ", ".join(h for h, _ in items[:TOPK_TO_SHOW])
+            host_label = f"varies ({sample})"
+        else:
+            host_label = s.get("last") or top_host
+        hop_int = int(hop_str)
+        labels[hop_int] = f"{hop_int}: {host_label}"
+        out.append({"count": hop_int, "host": host_label})
+    if out:
+        open(hops_json_path, "w", encoding="utf-8").write(json.dumps(out, indent=2))
+    return labels
 
 def monitor_target(ip, source_ip, settings, logger):
     """
