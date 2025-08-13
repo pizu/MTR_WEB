@@ -33,22 +33,10 @@ rrd:
   heartbeat: 120   # Max time allowed between samples
 
   data_sources:
-    - name: avg
-      type: GAUGE
-      min: 0
-      max: 1000
-    - name: last
-      type: GAUGE
-      min: 0
-      max: 1000
-    - name: best
-      type: GAUGE
-      min: 0
-      max: 1000
-    - name: loss
-      type: GAUGE
-      min: 0
-      max: 100
+    - { name: avg,  type: GAUGE, min: 0, max: 1000 }   # Average latency in ms
+    - { name: last, type: GAUGE, min: 0, max: 1000 }   # Last recorded latency
+    - { name: best, type: GAUGE, min: 0, max: 1000 }   # Best latency
+    - { name: loss, type: GAUGE, min: 0, max: 100 }    # Packet loss in %
 
   #RRA Calculation formula: rows = (retention_duration_seconds) / (step * base_step_seconds)
   #retention_duration_seconds = days in seconds (7 days example: 604800)
@@ -58,46 +46,12 @@ rrd:
   #Calc Part 2: 604800 / 300 = 2016
   
   rras:
-    - cf: AVERAGE
-      xff: 0.5
-      step: 1       # 1x base step (60s)
-      rows: 1440    # 1 day of 60s data
-
-    # 1-minute resolution for 1 day
-    - cf: AVERAGE
-      xff: 0.5
-      step: 1           # 1 × 60s = 1min
-      rows: 1440        # 1 day (24h × 60min)
-
-    # 5-minute resolution for 7 days
-    - cf: AVERAGE
-      xff: 0.5
-      step: 5           # 5 × 60s = 5min
-      rows: 2016        # 7 days
-
-    # 15-minute resolution for 30 days
-    - cf: AVERAGE
-      xff: 0.5
-      step: 15          # 15 × 60s = 15min
-      rows: 2880        # 30 days (30 × 24 × 4)
-
-    # 1-hour resolution for 90 days
-    - cf: AVERAGE
-      xff: 0.5
-      step: 60          # 60 × 60s = 1h
-      rows: 2160        # 90 days (90 × 24)
-
-    # Optional MAX RRA for detecting spikes
-    - cf: MAX
-      xff: 0.5
-      step: 5
-      rows: 2016
-
-    # Optional MIN RRA for low dips
-    - cf: MIN
-      xff: 0.5
-      step: 5
-      rows: 2016
+    - { cf: AVERAGE, xff: 0.5, step: 1,  rows: 1440 }    # 1-min res, 1 day
+    - { cf: AVERAGE, xff: 0.5, step: 5,  rows: 2016 }    # 5-min res, 7 days
+    - { cf: AVERAGE, xff: 0.5, step: 15, rows: 2880 }    # 15-min res, 30 days
+    - { cf: AVERAGE, xff: 0.5, step: 60, rows: 2160 }    # 1-hour res, 90 days
+    - { cf: MAX,     xff: 0.5, step: 5,  rows: 2016 }    # Spike detection
+    - { cf: MIN,     xff: 0.5, step: 5,  rows: 2016 }    # Drop detection
 
 # === Traceroute ===
 traceroute_directory: /opt/scripts/MTR_WEB/traces/
@@ -131,15 +85,18 @@ graph_generation:
   summary_interval_runs: 1   # build summaries every run
   hop_interval_runs: 5       # build per-hop graphs every 5th run
 
-graph_time_ranges:
-  - label: "1h"
-    seconds: 3600
-  - label: "6h"
-    seconds: 21600
-  - label: "12h"
-    seconds: 43200
-  - label: "24h"
-    seconds: 86400
+graph_time_ranges:                         # Time ranges for HTML graph selector
+  - { label: "1h",  seconds: 3600 }
+  - { label: "6h",  seconds: 21600 }
+  - { label: "12h", seconds: 43200 }
+  - { label: "24h", seconds: 86400 }
+  - { label: "2d",  seconds: 172800 }
+  - { label: "1w",  seconds: 604800 }
+  - { label: "2w",  seconds: 1209600 }
+  - { label: "1M",  seconds: 2629746 }
+  - { label: "2M",  seconds: 5259492 }
+  - { label: "6M",  seconds: 15778476 }
+  - { label: "1Y",  seconds: 31556952 }
 
 # === Cleanup Retention ===
 retention:
