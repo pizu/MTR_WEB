@@ -85,6 +85,19 @@ def _write_hops_json(stats, hops_path):
     if labels:
         open(hops_path, "w", encoding="utf-8").write(json.dumps(labels, indent=2))
 
+def update_hop_labels_only(ip, hops, settings, logger=None):
+    """
+    Refresh <ip>_hops.json based on rolling stats; safe to call every cycle.
+    Keeps '???' and emits 'varies(...)' when no single host dominates.
+    """
+    p = _paths(ip, settings)
+    stats = _load_stats(p["stats"])
+    stats = _update_stats_with_snapshot(stats, hops)
+    _save_stats(p["stats"], stats)
+    _write_hops_json(stats, p["hops"])
+    if logger:
+        logger.debug(f"[{ip}] Hop labels updated -> {p['hops']}")
+
 def save_trace_and_json(ip, hops, settings, logger):
     """
     Saves traceroute results for a target in two formats (plus 2 new ones):
@@ -112,10 +125,3 @@ def save_trace_and_json(ip, hops, settings, logger):
     with open(p["json"], "w") as f:
         json.dump(hop_map, f, indent=2)
     logger.info(f"Saved hop label map to {p['json']}")
-
-    # 3–4) Stabilized labels for charts/UIs
-    stats = _load_stats(p["stats"])
-    stats = _update_stats_with_snapshot(stats, hops)
-    _save_stats(p["stats"], stats)
-    _write_hops_json(stats, p["hops"])
-    logger.info(f"Updated hop stats and labels: {p['hops']}")
