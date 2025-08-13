@@ -66,8 +66,6 @@ def plan_jobs_for_targets(settings, cfg, do_summary: bool, do_hops: bool):
                 if not label:
                     continue
                 expected.add(f"{ip}_{metric}_{label}.png")
-                for hop_index, _ in hops:
-                    expected.add(f"{ip}_hop{hop_index}_{metric}_{label}.png")
 
         # Cleanup old PNGs for this IP
         _clean_old_graphs(cfg.GRAPH_DIR, ip, expected, logger=None)
@@ -89,13 +87,5 @@ def plan_jobs_for_targets(settings, cfg, do_summary: bool, do_hops: bool):
                         cfg.TRACE_DIR, cfg.USE_RRD_LOCK, cfg.EXECUTOR_KIND, cfg.GRAPH_DIR,
                         cfg.CPU_AFFINITY
                     )))
-
-                if do_hops:
-                    for hop_index, hop_label in hops:
-                        jobs.append(("hop", (
-                            ip, rrd_path, hop_index, metric, label, seconds, ds_present, hop_label,
-                            cfg.WIDTH, cfg.HEIGHT, cfg.SKIP_UNCHANGED, cfg.RECENT_SAFETY_SECONDS,
-                            cfg.TRACE_DIR, cfg.USE_RRD_LOCK, cfg.EXECUTOR_KIND, cfg.GRAPH_DIR,
-                            cfg.CPU_AFFINITY
-                        )))
+                    
     return jobs
