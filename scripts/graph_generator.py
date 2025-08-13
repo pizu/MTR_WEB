@@ -24,9 +24,9 @@ def main():
     # cadence: which jobs to run this round
     run_index = load_run_index(cfg.STATE_PATH)
     do_summary = (run_index % max(1, cfg.SUMMARY_EVERY) == 0)
-    do_hops    = (run_index % max(1, cfg.HOPS_EVERY) == 0)
+    do_hops    = False   # <— force-disable per-hop graphs
     logger.info(f"Run #{run_index} — summaries: {'yes' if do_summary else 'no'}, hops: {'yes' if do_hops else 'no'}")
-
+    
     jobs = plan_jobs_for_targets(settings, cfg, do_summary=do_summary, do_hops=do_hops)
     logger.info(f"Planned {len(jobs)} jobs (executor={cfg.EXECUTOR_KIND}, parallelism={cfg.PARALLELISM}, skip_unchanged={cfg.SKIP_UNCHANGED})")
 
