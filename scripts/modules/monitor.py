@@ -204,6 +204,11 @@ def monitor_target(ip, source_ip, settings, logger):
 
         # 5) Update RRDs every iteration (even if nothing changed)
         update_rrd(rrd_path, hops, ip, settings, debug_rrd_log)
+        stats_path, hops_json_path = _label_paths(ip, settings)
+        stats = _load_stats(stats_path)
+        stats = _update_stats_with_snapshot(stats, hops)
+        _save_stats(stats_path, stats)
+        _decide_label_per_hop(stats, hops_json_path)
 
         # 6) Persist traceroute + hop map only when something changed (noise control)
         if hop_path_changed or loss_changed:
