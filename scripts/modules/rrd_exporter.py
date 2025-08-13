@@ -3,153 +3,170 @@
 modules/rrd_exporter.py
 
 Exports interactive-friendly JSON time series for a target IP and a given time range label.
-Output lives under: html/data/<ip>_<label>.json
+Output path: html/data/<ip>_<label>.json
 
-Why JSON?
-- Your site is static. We can fetch JSON from the browser and render with Chart.js.
-- A single JSON per (ip, timerange) contains *all* metrics. The UI flips metric client-side.
-
-JSON shape:
+JSON schema:
 {
   "ip": "1.1.1.1",
   "label": "1h",
   "seconds": 3600,
   "step": 60,
-  "timestamps": [ "10:00", "10:01", ... ],        # strings for x-axis
-  "epoch":     [ 1723545600, 1723545660, ... ],  # raw epoch (optional; useful later)
+  "timestamps": ["10:00","10:01", ...],  # human-friendly HH:MM
+  "epoch": [1723545600, 1723545660, ...],
   "hops": [
-    { "hop": 0, "name": "0: 192.0.2.1", "color": "#60a5fa",
-      "metrics": { "avg": [..], "last": [..], "best": [..], "loss": [..] } },
+    {
+      "hop": 0,
+      "name": "0: 192.0.2.1",          # from traceroute labels (stabilized)
+      "color": "#60a5fa",               # deterministic per hop
+      "metrics": {
+        "avg":  [.., .., ..],
+        "last": [.., .., ..],
+        "best": [.., .., ..],
+        "loss": [.., .., ..]
+      }
+    },
     ...
   ]
 }
-
-Notes:
-- Loss is in %; latency metrics in ms (as per your DS naming).
-- Missing data -> null (keeps gaps visible).
-- Colors are deterministic per hop index (same formula as graph_workers.py).
 """
 
-import os, re, math, time, json, rrdtool
-from datetime import datetime, timezone
-from modules.graph_utils import get_labels  # to map hop index -> legend label
+import os
+import math
+import time
+import json
+import rrdtool
+from datetime import datetime
+from modules.graph_utils import get_labels  # hop legend labels
 
 def _color(hop_index: int) -> str:
+    """Deterministic color per hop (matches graph_workers)."""
     r = int((1 + math.sin(hop_index * 0.3)) * 127)
     g = int((1 + math.sin(hop_index * 0.3 + 2)) * 127)
     b = int((1 + math.sin(hop_index * 0.3 + 4)) * 127)
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def _fmt_ts(epoch: int) -> str:
-    # compact local time label like "10:05"
-    return datetime.fromtimestamp(epoch).strftime("%H:%M")
+    """Human-friendly HH:MM timestamps for the x-axis."""
+    try:
+        return datetime.fromtimestamp(epoch).strftime("%H:%M")
+    except Exception:
+        return ""
 
 def _nan_to_none(v):
+    """Convert NaN/None/non-numeric to None for JSON."""
     try:
-        if v is None: return None
-        if isinstance(v, float) and (v != v):  # NaN check
+        if v is None:
+            return None
+        if isinstance(v, float) and (v != v):  # NaN
             return None
         return float(v)
     except Exception:
         return None
 
+def _ensure_dir(p: str):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+
 def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, logger=None) -> str:
     """
-    Export a single JSON for (ip, label, seconds). Returns the output path.
+    Export a single JSON bundle for (ip, label, seconds).
+    Returns the output file path.
     """
     RRD_DIR   = settings.get("rrd_directory", "rrd")
-    GRAPH_DIR = settings.get("graph_output_directory", "html/graphs")
     DATA_DIR  = os.path.join("html", "data")
-    os.makedirs(DATA_DIR, exist_ok=True)
+    _ensure_dir(os.path.join(DATA_DIR, "x"))  # ensure folder exists
 
-    # Which metrics we export (names only; e.g., ["avg","last","best","loss"])
-    metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
-
+    # Metrics to export (names only; e.g., ["avg", "last", "best", "loss"])
+    metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", []) if ds.get("name")]
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
+    out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
+
+    # If missing RRD, write empty stub so UI can still load
     if not os.path.exists(rrd_path):
-        if logger: logger.warning(f"[{ip}] RRD missing: {rrd_path}")
-        # write a stub so UI shows "no data"
         out = {
-            "ip": ip, "label": label, "seconds": seconds, "step": None,
+            "ip": ip, "label": label, "seconds": int(seconds), "step": None,
             "timestamps": [], "epoch": [], "hops": []
         }
-        out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
-        open(out_path, "w", encoding="utf-8").write(json.dumps(out, indent=2))
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
+        if logger:
+            logger.warning(f"[{ip}] RRD missing, wrote stub: {out_path}")
         return out_path
 
-    # Legend: list[(hop_index, "idx: hostlabel")]
-    hops_legend = get_labels(ip, traceroute_dir=settings.get("traceroute_directory", "traceroute"))
-    if not hops_legend:
-        hops_legend = []  # UI will show empty
+    # Build legend labels: list of (hop_index:int, "hop: label")
+    hops_legend = get_labels(ip, traceroute_dir=settings.get("traceroute_directory", "traceroute")) or []
+    # If no labels (rare), still try to enumerate hop indices by inspecting DS names after fetch.
 
-    # Figure out DS names available
-    info = rrdtool.info(rrd_path)
-    ds_available = set()
-    for k in info.keys():
-        if k.startswith("ds[") and k.endswith("].type"):
-            ds_available.add(k[3:-6])  # 'ds[hop0_avg].type' → 'hop0_avg'
-
-    # Determine fetch window: end now, start -seconds
+    # Fetch once for the time grid + all DS columns available in the chosen RRA
     end = int(time.time())
     start = end - int(seconds)
 
-    # We’ll build a list of timestamps once, from any DS we can fetch.
-    # Prefer hop0 and first metric for step; if missing, fallback to any ds.
-    step = None
-    base_ds = None
-    for m in metrics:
-        cand = f"hop0_{m}"
-        if cand in ds_available:
-            base_ds = cand
-            break
-    if base_ds is None and ds_available:
-        base_ds = sorted(ds_available)[0]
-
-    # If absolutely no DS, write empty
-    if base_ds is None:
+    try:
+        # Correct signature: returns ((start, end, step), names, rows)
+        (f_start, f_end, f_step), names, rows = rrdtool.fetch(
+            rrd_path, "AVERAGE", "--start", str(start), "--end", str(end)
+        )
+    except rrdtool.OperationalError as e:
+        # If fetch fails entirely, write empty stub
+        if logger:
+            logger.warning(f"[{ip}] fetch failed for {label}: {e}")
         out = {
-            "ip": ip, "label": label, "seconds": seconds, "step": None,
+            "ip": ip, "label": label, "seconds": int(seconds), "step": None,
             "timestamps": [], "epoch": [], "hops": []
         }
-        out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
-        open(out_path, "w", encoding="utf-8").write(json.dumps(out, indent=2))
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
         return out_path
 
-    # Fetch base to get the time grid
-    try:
-        (f_start, f_end, f_step), f_rows = rrdtool.fetch(rrd_path, "AVERAGE",
-                                                         "--start", str(start), "--end", str(end),
-                                                         f"DEF:v={rrd_path}:{base_ds}:AVERAGE")
-    except rrdtool.OperationalError:
-        # Some rrdtool builds require different fetch signature; fallback w/out DEF
-        (f_start, f_end, f_step), f_rows = rrdtool.fetch(rrd_path, "AVERAGE",
-                                                         "--start", str(start), "--end", str(end))
-    step = int(f_step)
-    epochs = list(range(int(f_start), int(f_end), step))
-    labels = [_fmt_ts(ts) for ts in epochs]
+    # Time grid
+    step = int(f_step) if f_step else None
+    # rows length may be (f_end - f_start) / step; construct epochs to match rows
+    # Guard against weirdness if step is None/0
+    if step and step > 0:
+        epochs = list(range(int(f_start), int(f_end), step))
+    else:
+        # Fallback: derive length from rows only
+        epochs = list(range(len(rows)))
+    # If lengths mismatch, trim to common length
+    if len(epochs) != len(rows):
+        n = min(len(epochs), len(rows))
+        epochs = epochs[:n]
+        rows = rows[:n]
 
-    # Helper to fetch a specific DS onto the base grid
-    def fetch_ds(ds_name: str):
-        if ds_name not in ds_available:
-            return [None] * len(epochs)
-        try:
-            (s, e, st), rows = rrdtool.fetch(rrd_path, "AVERAGE",
-                                             "--start", str(start), "--end", str(end),
-                                             f"DEF:v={rrd_path}:{ds_name}:AVERAGE")
-        except rrdtool.OperationalError:
-            # Fallback: try raw fetch and assume rows align; if not, pad
-            (s, e, st), rows = rrdtool.fetch(rrd_path, "AVERAGE",
-                                             "--start", str(start), "--end", str(end))
-        # Flatten values; rows is list of tuples per timestamp
-        vals = [r[0] if r and len(r) else None for r in rows]
-        # If alignment differs, pad/trim to match epochs length
-        if len(vals) != len(epochs):
-            # naive align by trunc/pad; acceptable for static UI
-            if len(vals) > len(epochs): vals = vals[-len(epochs):]
-            else: vals = ([None] * (len(epochs) - len(vals))) + vals
-        return [_nan_to_none(v) for v in vals]
+    labels_hhmm = [_fmt_ts(ts if step else int(time.time())) for ts in epochs]
 
-    # Build hop datasets {metrics: {metricName: [..]}}
+    # Build a quick index for DS names -> column index
+    name_to_idx = {name: i for i, name in enumerate(names or [])}
+
+    # If we didn't get any legend labels, infer hop indices from DS names (e.g., hop0_avg)
+    if not hops_legend and names:
+        seen_hops = set()
+        for nm in names:
+            # expect "hopN_metric"
+            parts = nm.split("_", 1)
+            if len(parts) == 2 and parts[0].startswith("hop"):
+                try:
+                    idx = int(parts[0][3:])
+                    seen_hops.add(idx)
+                except Exception:
+                    pass
+        hops_legend = sorted((h, f"{h}: hop{h}") for h in seen_hops)
+
+    # Helper: extract a timeseries for a single DS name from rows
+    def extract_series(ds_name: str):
+        col = name_to_idx.get(ds_name, None)
+        if col is None:
+            return [None] * len(rows)
+        out_vals = []
+        for r in rows:
+            # each row is a tuple aligned with names; r[col] can be None/NaN
+            try:
+                val = r[col]
+            except Exception:
+                val = None
+            out_vals.append(_nan_to_none(val))
+        return out_vals
+
+    # Build hop entries with per-metric arrays
     hop_entries = []
     for hop_index, label_text in hops_legend:
         entry = {
@@ -159,8 +176,8 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             "metrics": {}
         }
         for m in metrics:
-            ds_name = f"hop{hop_index}_{m}"
-            entry["metrics"][m] = fetch_ds(ds_name)
+            ds = f"hop{hop_index}_{m}"
+            entry["metrics"][m] = extract_series(ds)
         hop_entries.append(entry)
 
     out = {
@@ -168,14 +185,12 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         "label": label,
         "seconds": int(seconds),
         "step": step,
-        "timestamps": labels,
+        "timestamps": labels_hhmm,
         "epoch": epochs,
         "hops": hop_entries
     }
-
-    out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
     if logger:
-        logger.info(f"[{ip}] exported {out_path} ({len(epochs)} points)")
+        logger.info(f"[{ip}] exported {out_path} ({len(epochs)} points, hops={len(hop_entries)})")
     return out_path
