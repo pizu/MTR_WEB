@@ -8,7 +8,6 @@ import yaml
 from modules.utils import load_settings, setup_logger
 from modules.graph_utils import get_available_hops
 from modules.html_builder.target_html import generate_target_html
-from modules.html_builder.per_hop_html import generate_per_hop_html
 from modules.html_cleanup import remove_orphan_html_files
 
 # Load settings and logger
