@@ -153,3 +153,57 @@ def get_available_hops(ip, graph_dir="html/graphs", traceroute_dir="traceroute")
                 except ValueError:
                     continue
     return sorted(hops)
+
+def get_labels(ip, traceroute_dir="traceroute"):
+    """
+    Return a list of (hop_number:int, label:str) pairs for legends.
+
+    Preferred source: traceroute/<ip>_hops.json
+      [
+        {"count": 1, "host": "192.0.2.1"},
+        {"count": 2, "host": "varies (203.0.113.1, 203.0.113.9, ???)"},
+        ...
+      ]
+
+    Fallback (legacy): traceroute/<ip>.trace.txt with lines like:
+      "<hop> <ip/name> <avg_ms> ms"
+    """
+    # 1) Stabilized JSON with “varies(…)”
+    json_path = os.path.join(traceroute_dir, f"{ip}_hops.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                arr = json.load(f)
+            out = []
+            for item in arr:
+                if not isinstance(item, dict):
+                    continue
+                if "count" not in item or "host" not in item:
+                    continue
+                hop = int(item["count"])
+                host = str(item["host"])
+                out.append((hop, f"{hop}: {host}"))
+            return sorted(out, key=lambda x: x[0])
+        except Exception:
+            pass  # fall through to legacy
+
+    # 2) Legacy plain-text fallback
+    txt_path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
+    if os.path.exists(txt_path):
+        out = []
+        try:
+            with open(txt_path, encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        try:
+                            hop = int(parts[0])
+                            host = parts[1]
+                            out.append((hop, f"{hop}: {host}"))
+                        except ValueError:
+                            continue
+            return sorted(out, key=lambda x: x[0])
+        except Exception:
+            return []
+    return []
+
