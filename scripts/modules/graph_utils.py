@@ -4,6 +4,7 @@
 
 import os
 import re
+import json
 
 def get_available_hops(ip, graph_dir="html/graphs"):
     """
@@ -21,13 +22,12 @@ def get_available_hops(ip, graph_dir="html/graphs"):
     hops = set()
     if not os.path.exists(graph_dir):
         return []
-
+        
     for fname in os.listdir(graph_dir):
-        # Match: <ip>_hop<number>_<any_metric>_<any_range>.png
         match = re.match(rf"{re.escape(ip)}_hop(\d+)_\w+_", fname)
         if match:
             hops.add(int(match.group(1)))
-
+            
     return sorted(hops)
 
 def get_labels(ip, traceroute_dir="traceroute"):
@@ -37,10 +37,29 @@ def get_labels(ip, traceroute_dir="traceroute"):
 
     Example return: [(0, 'Hop 0 - 192.0.2.1'), (1, 'Hop 1 - 203.0.113.1')]
     """
+    json_path = os.path.join(traceroute_dir, f"{ip}_hops.json")
+    if os.path.exists(json_path):
+        try:
+            arr = json.loads(open(json_path, encoding="utf-8").read())
+            out = []
+            for item in arr:
+                if not isinstance(item, dict): 
+                    continue
+                hop = item.get("count")
+                host = item.get("host")
+                if hop is None or host is None:
+                    continue
+                # show "N: host" exactly as requested
+                out.append((int(hop), f"{int(hop)}: {host}"))
+            return sorted(out, key=lambda x: x[0])
+            
+        except Exception:
+            pass  # fall through to legacy
+
+    # Legacy fallback: parse "<ip>.trace.txt"
     path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
     if not os.path.exists(path):
         return []
-
     hops = []
     with open(path) as f:
         for line in f:
@@ -52,7 +71,8 @@ def get_labels(ip, traceroute_dir="traceroute"):
                 try:
                     hop_num = int(parts[0])
                     hop_ip = parts[1]
-                    hops.append((hop_num, f"Hop {hop_num} - {hop_ip}"))
+                    hops.append((hop_num, f"{hop_num}: {hop_ip}"))
+                    
                 except ValueError:
                     continue
     return hops
