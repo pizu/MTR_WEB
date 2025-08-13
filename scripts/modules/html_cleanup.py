@@ -19,7 +19,13 @@ def remove_orphan_html_files(html_dir, valid_ips, logger):
         ]
 
         for html_file in all_html:
-            ip_clean = html_file.replace("_hops.html", "").replace(".html", "")
+            # hard-delete any per-hop landing pages
+            if html_file.endswith("_hops.html"):
+                os.remove(os.path.join(html_dir, html_file))
+                logger.info(f"Removed per-hop HTML: {html_file}")
+                continue
+
+            ip_clean = html_file.replace(".html", "")
             if ip_clean not in valid_ips:
                 os.remove(os.path.join(html_dir, html_file))
                 logger.info(f"Removed stale HTML file: {html_file}")
