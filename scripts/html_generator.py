@@ -8,7 +8,7 @@ import yaml
 from modules.utils import load_settings, setup_logger
 from modules.graph_utils import get_available_hops
 from modules.html_builder.target_html import generate_target_html
-from modules.html_cleanup import remove_orphan_html_files
+from modules.html_cleanup import remove_orphan_html_files, resolve_html_dir_from_scripts
 
 def _default_settings_path() -> str:
     """Return the repo-root mtr_script_settings.yaml (../ from scripts/)."""
@@ -56,3 +56,4 @@ for target in targets:
 
 # Clean old files
 remove_orphan_html_files(HTML_DIR, target_ips, logger)
+remove_orphan_html_files(HTML_DIR, valid_ips, logger)
