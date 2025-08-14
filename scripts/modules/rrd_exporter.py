@@ -72,7 +72,9 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     Returns the output file path.
     """
     RRD_DIR   = settings.get("rrd_directory", "rrd")
-    DATA_DIR  = os.path.join("html", "data")
+    HTML_DIR = resolve_html_dir(settings)
+    DATA_DIR = os.path.join(HTML_DIR, "data")
+    os.makedirs(DATA_DIR, exist_ok=True)
     _ensure_dir(os.path.join(DATA_DIR, "x"))  # ensure folder exists
 
     # Metrics to export (names only; e.g., ["avg", "last", "best", "loss"])
