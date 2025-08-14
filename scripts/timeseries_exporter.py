@@ -12,10 +12,11 @@ import os, yaml, sys
 from modules.utils import load_settings, setup_logger
 from modules.rrd_exporter import export_ip_timerange_json
 
+settings_path = sys.argv[1] if len(sys.argv) > 1 else _default_settings_path()
+settings = load_settings(settings_path)
+
 def main():
   return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mtr_script_settings.yaml"))
-  settings_path = sys.argv[1] if len(sys.argv) > 1 else _default_settings_path()
-  settings = load_settings(settings_path)
   
     logger = setup_logger("timeseries_exporter", settings.get("log_directory", "/tmp"),
                           "timeseries_exporter.log", settings=settings)
