@@ -10,8 +10,9 @@ from modules.utils import load_settings, setup_logger
 from modules.index_writer import generate_index_page
 
 # Load settings
-settings = load_settings("mtr_script_settings.yaml")
-logger = setup_logger("index_generator", settings.get("log_directory", "/tmp"), "index_generator.log", settings=settings)
+return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mtr_script_settings.yaml"))
+settings_path = sys.argv[1] if len(sys.argv) > 1 else _default_settings_path()
+settings = load_settings(settings_path)
 
 # Load targets from mtr_targets.yaml
 try:
