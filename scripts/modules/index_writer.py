@@ -9,27 +9,14 @@
 import os
 from datetime import datetime
 from modules.fping_status import get_fping_status
-
-def resolve_html_dir(settings):
-    """
-    Resolve HTML root directory based on settings.yaml.
-    If path is relative, make it absolute from repo root.
-    """
-    html_dir = settings.get("html_directory", "html")
-    if not os.path.isabs(html_dir):
-        # index_writer.py is in scripts/modules/, so go 2 levels up to repo root
-        html_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", html_dir))
-    else:
-        html_dir = os.path.abspath(html_dir)
-    os.makedirs(html_dir, exist_ok=True)
-    return html_dir
+from modules.utils import resolve_html_dir
 
 def generate_index_page(targets, settings, logger):
     """
     Builds the index.html page from the list of targets and settings.
     Columns: IP | Description | Status | Last Seen
     """
-    HTML_DIR = resolve_html_dir(settings)
+    HTML_DIR = resolve_html_dir(settings)           # <— use shared helper
     LOG_DIR         = settings.get("log_directory", "logs")
     ENABLE_FPING    = settings.get("enable_fping_check", True)
     FPING_PATH      = settings.get("fping_path", None)
