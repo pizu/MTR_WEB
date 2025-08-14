@@ -11,7 +11,9 @@ from modules.html_builder.target_html import generate_target_html
 from modules.html_cleanup import remove_orphan_html_files
 
 # Load settings and logger
-settings = load_settings("mtr_script_settings.yaml")
+return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mtr_script_settings.yaml"))
+settings_path = sys.argv[1] if len(sys.argv) > 1 else _default_settings_path()
+settings = load_settings(settings_path)
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("html_generator", log_directory, "html_generator.log", settings=settings)
 
