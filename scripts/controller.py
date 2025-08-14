@@ -39,7 +39,7 @@ from modules.utils import load_settings, setup_logger
 # Absolute path to .../scripts/ (this file lives here)
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
 # Repo root is one level up from scripts/
-REPO_ROOT = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))
+REPO_ROOT   = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))
 
 # Absolute important files (robust whether systemd runs from repo root or anywhere)
 CONFIG_FILE          = os.path.join(REPO_ROOT, "mtr_targets.yaml")
