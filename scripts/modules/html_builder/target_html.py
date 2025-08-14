@@ -19,7 +19,7 @@ def generate_target_html(ip, description, hops, settings):
     logger = setup_logger("target_html", settings.get("log_directory", "/tmp"),
                           "target_html.log", settings=settings)
 
-    HTML_DIR        = "html"
+    HTML_DIR        = resolve_html_dir(settings)
     DATA_DIR        = os.path.join("html", "data")
     LOG_DIR         = settings.get("log_directory", "logs")
     TRACEROUTE_DIR  = settings.get("traceroute_directory", "traceroute")
