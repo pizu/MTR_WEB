@@ -46,8 +46,7 @@ def repo_root() -> str:
 def resolve_html_dir(settings: dict) -> str:
     """
     Resolve the website root where index/<ip>.html, data/, graphs/ live.
-    - If settings['html_directory'] is absolute, use it.
-    - If relative (or missing), resolve relative to repo_root().
+    - settings['html_directory'] may be absolute or relative to repo root.
     Ensures the directory exists.
     """
     root = Path(repo_root())
@@ -61,8 +60,8 @@ def resolve_html_dir(settings: dict) -> str:
 
 def resolve_graphs_dir(settings: dict) -> str:
     """
-    Default graphs dir is <html_dir>/graphs unless graph_output_directory overrides it.
-    Ensures the directory exists.
+    Graphs directory. If graph_output_directory is not set,
+    defaults to <html_dir>/graphs. Ensures the directory exists.
     """
     override = settings.get("graph_output_directory")
     if override:
