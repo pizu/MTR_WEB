@@ -134,7 +134,7 @@ def generate_target_html(ip, description, hops, settings):
 <script>
 const METRICS = """ + json_escape_js_array(METRICS := METRICS) + """;
 const RANGES  = """ + json_escape_js_array([r["label"] for r in TIME_RANGES]) + """;
-const DATA_DIR = "data";
+const DATA_DIR = "data";                  // relative to HTML_DIR
 const IP = """ + json_quote(ip) + """;
 
 const metricSel = document.getElementById('metric');
@@ -291,7 +291,6 @@ def json_quote(s: str) -> str:
     return '"' + (s or "").replace('"', '\\"') + '"'
 
 def json_escape_js_array(arr):
-    # returns JS array literal of strings upper/lower preserved
     out = []
     for v in arr:
         if v is None: continue
