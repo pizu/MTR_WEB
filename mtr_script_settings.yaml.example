@@ -24,6 +24,15 @@ max_hops: 30
 graph_width: 800
 graph_height: 200
 
+# === HOP Labels ===
+labels:
+  # Reset/realign policy for hop label statistics when hop paths change:
+  # none               -> never reset (may mix hosts if hops shift)
+  # from_first_diff    -> reset stats from first hop where path differs (safe default)
+  # realign_then_reset -> try to match hosts to previous hop stats before resetting rest
+  # all                -> reset stats for all hops whenever path changes
+  reset_mode: from_first_diff
+
 # === Controller Settings (Optional) ===
 controller:
   loop_seconds: 15
