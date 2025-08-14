@@ -176,7 +176,6 @@ sudo yum install -y mtr rrdtool python3 python3-pip python3-rrdtool fping
 # Install Python dependencies
 pip3 install pyyaml deepdiff
 
-
 ### Install on Debian / Ubuntu
 
 sudo apt update
@@ -185,24 +184,28 @@ pip3 install pyyaml deepdiff
 
 ### Usage
 ## Start the monitoring controller
-cd /opt/scripts/MTR_WEB/scripts
-python3 controller.py
+cd /opt/scripts/MTR_WEB/
+python3 scripts/controller.py
 
-## Generate graphs periodically
-python3 graph_generator.py
+
+## Generate graphs & Time Series periodically
+python3 scripts/graph_generator.py
+python3 scripts/timeseries_exporter.py
 
 ## Generate HTML pages
-python3 html_generator.py
-python3 index_generator.py
+python3 scripts/html_generator.py
+python3 scripts/index_generator.py
 
 ## Cleanup
-python3 cleanup.py
+python3 scripts/cleanup.py
 
 ### Suggested Cron Jobs
 
-*/2 * * * *  cd /opt/scripts/MTR_WEB/scripts && /usr/bin/python3 graph_generator.py
-*/3 * * * *  cd /opt/scripts/MTR_WEB/scripts && /usr/bin/python3 html_generator.py && /usr/bin/python3 index_generator.py
-7  * * * *   cd /opt/scripts/MTR_WEB/scripts && /usr/bin/python3 cleanup.py
+*/5 * * * * cd /opt/scripts/MTR_WEB && /usr/bin/python3 scripts/graph_generator.py
+*/5 * * * * cd /opt/scripts/MTR_WEB && /usr/bin/python3 scripts/timeseries_exporter.py
+*/5 * * * * cd /opt/scripts/MTR_WEB && /usr/bin/python3 scripts/html_generator.py
+*/5 * * * * cd /opt/scripts/MTR_WEB && /usr/bin/python3 scripts/index_generator.py
+7  * * * *  cd /opt/scripts/MTR_WEB && /usr/bin/python3 scripts/cleanup.py
 
 
 ### Example Apache Virtual
