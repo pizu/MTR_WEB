@@ -13,13 +13,15 @@
 import os, re, html
 from datetime import datetime
 from modules.utils import setup_logger
-from modules.rrd_metrics import get_rrd_metrics  # small header hint only
+from modules.rrd_metrics import get_rrd_metrics
+from modules.html_cleanup import resolve_html_dir_from_scripts
+
 
 def generate_target_html(ip, description, hops, settings):
     logger = setup_logger("target_html", settings.get("log_directory", "/tmp"),
                           "target_html.log", settings=settings)
 
-    HTML_DIR        = resolve_html_dir(settings)
+    HTML_DIR = resolve_html_dir_from_scripts(settings)
     DATA_DIR        = os.path.join("html", "data")
     LOG_DIR         = settings.get("log_directory", "logs")
     TRACEROUTE_DIR  = settings.get("traceroute_directory", "traceroute")
