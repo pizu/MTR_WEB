@@ -21,6 +21,12 @@ max_hops: 30
 graph_width: 800
 graph_height: 200
 
+# === Controller Settings (Optional) ===
+controller:
+  loop_seconds: 15
+  pipeline_every_seconds: 120
+  rerun_pipeline_on_changes: true
+
 
 #step and rows determine how long your data is retained.
 #You can mix different cf functions (e.g. MAX to highlight spikes).
