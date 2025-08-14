@@ -2,47 +2,10 @@
 """
 modules/mtr_runner.py
 
-Purpose
--------
-Run ONE MTR snapshot and return a normalized list of hop dicts.
-
-Key design choices
-------------------
-1) We use `--json` + `--report-cycles` (NO `--report` flag), which is friendly
-   across builds and gives a predictable runtime:
-      total runtime ≈ cycles * packets_per_cycle * per_packet_interval
-
-2) We start the subprocess with `start_new_session=True`, so the controller
-   (or watchdog) can terminate the entire *process group* instantly on stop.
-
-3) Timeout:
-   - If mtr.timeout_seconds > 0, we use it as-is.
-   - Else we compute: cycles * packets * interval * multiplier + margin,
-     then apply a safety floor. This keeps the controller loop snappy
-     without spurious timeouts on longer paths.
-
-Inputs
-------
-run_mtr(ip, source_ip, logger, settings)
-- ip:         target host/IP
-- source_ip:  optional source address to bind (passed via --address)
-- logger:     project logger
-- settings:   dict loaded from mtr_script_settings.yaml
-
-Returns
--------
-[] on failure; otherwise a list of hops with consistent types:
-  {
-    "count": int,  # hop index from MTR output (usually 1-based)
-    "host":  str,  # hostname or IP or "???"
-    "Loss%": float,
-    "Snt":   int,
-    "Last":  float,
-    "Avg":   float,
-    "Best":  float,
-    "Wrst":  float,
-    "StDev": float
-  }
+Runs ONE MTR snapshot and returns normalized hops.
+- Prefers --json + --report-cycles (predictable runtime).
+- Falls back to plain --json (non-report), with hop-aware timeout.
+- Launches mtr in its own process group for clean cancellation.
 """
 
 import os
@@ -51,59 +14,62 @@ import shlex
 import signal
 import subprocess
 import ipaddress
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# ----------------------------
-# Helpers: timeout calculation
-# ----------------------------
-def _compute_timeout_report_mode(settings: dict) -> tuple[int, str]:
-    """
-    Compute a timeout suitable for --json with --report-cycles.
-
-    YAML knobs (all under mtr.*):
-      report_cycles (int)          default 1
-      packets_per_cycle (int)      default 10
-      per_packet_interval (float)  default 1.0
-      timeout_seconds (int)        default 0 (auto)
-      timeout_multiplier (float)   default 1.0
-      timeout_margin_seconds (int) default 5
-      timeout_floor_seconds (int)  default 10
-
-    Returns (timeout_seconds, rationale_string)
-    """
+# ---------- Timeout calculators ----------
+def _timeout_report_mode(settings: dict) -> Tuple[int, str]:
+    """Timeout for --json with --report-cycles."""
     mtr_cfg = settings.get("mtr", {}) or {}
-
     cycles   = int(mtr_cfg.get("report_cycles", 1))
     packets  = max(1, int(mtr_cfg.get("packets_per_cycle", 10)))
     interval = float(mtr_cfg.get("per_packet_interval", 1.0))
     if interval <= 0:
         interval = 0.1
 
-    # Fixed timeout wins
     fixed = int(mtr_cfg.get("timeout_seconds", 0))
     if fixed > 0:
         return fixed, f"fixed={fixed}s"
 
-    multiplier = float(mtr_cfg.get("timeout_multiplier", 1.0))
-    margin     = int(mtr_cfg.get("timeout_margin_seconds", 5))
-    floor_s    = int(mtr_cfg.get("timeout_floor_seconds", 10))
+    mult   = float(mtr_cfg.get("timeout_multiplier", 1.0))
+    margin = int(mtr_cfg.get("timeout_margin_seconds", 5))
+    floor_ = int(mtr_cfg.get("timeout_floor_seconds", 10))
 
     base = cycles * packets * interval
-    est  = int(base * max(multiplier, 0.1)) + max(margin, 0)
-    timeout = max(est, floor_s)
-
-    why = (f"auto: cycles={cycles} * packets={packets} * interval={interval}s"
-           f" * mult={multiplier} + margin={margin}s -> {est}s ; floor={floor_s}s"
-           f" => timeout={timeout}s")
-    return timeout, why
+    est  = int(base * max(mult, 0.1)) + max(margin, 0)
+    t    = max(est, floor_)
+    why  = (f"report-mode: cycles={cycles}*packets={packets}*interval={interval}s"
+            f"*mult={mult}+margin={margin}s -> {est}s; floor={floor_}s => {t}s")
+    return t, why
 
 
-# ----------------------------
-# Helpers: output normalization
-# ----------------------------
-def _normalize_hub(h: dict) -> dict:
-    """Coerce MTR hub fields into consistent types."""
+def _timeout_nonreport_mode(settings: dict) -> Tuple[int, str]:
+    """Timeout for plain --json (no --report-cycles): packets are per-hop."""
+    mtr_cfg = settings.get("mtr", {}) or {}
+    packets = max(1, int(mtr_cfg.get("packets_per_cycle", 10)))
+    interval = float(mtr_cfg.get("per_packet_interval", 1.0))
+    if interval <= 0:
+        interval = 0.1
+    est_hops = max(1, int(settings.get("max_hops", mtr_cfg.get("max_hops", 30))))
+
+    fixed = int(mtr_cfg.get("timeout_seconds", 0))
+    if fixed > 0:
+        return fixed, f"fixed={fixed}s"
+
+    mult   = float(mtr_cfg.get("timeout_multiplier", 1.0))
+    margin = int(mtr_cfg.get("timeout_margin_seconds", 10))
+    floor_ = int(mtr_cfg.get("timeout_floor_seconds", 60))
+
+    base = packets * interval * est_hops
+    est  = int(base * max(mult, 0.1)) + max(margin, 0)
+    t    = max(est, floor_)
+    why  = (f"non-report: packets={packets}*interval={interval}s*est_hops={est_hops}"
+            f"*mult={mult}+margin={margin}s -> {est}s; floor={floor_}s => {t}s")
+    return t, why
+
+
+# ---------- Normalization ----------
+def _norm(h: dict) -> dict:
     return {
         "count": int(h.get("count", 0)),
         "host": h.get("host", "???"),
@@ -117,123 +83,139 @@ def _normalize_hub(h: dict) -> dict:
     }
 
 
-# ----------------------------
-# Main entrypoint
-# ----------------------------
-def run_mtr(ip: str,
-            source_ip: Optional[str],
-            logger,
-            settings: dict) -> List[Dict[str, Any]]:
-    """
-    Execute one MTR snapshot with predictable timing and clean cancellation.
-    """
-
-    # 1) Read knobs from YAML
+# ---------- Core runner ----------
+def _build_cmd_report(ip: str, source_ip: Optional[str], settings: dict) -> list:
     mtr_cfg = settings.get("mtr", {}) or {}
     cycles   = int(mtr_cfg.get("report_cycles", 1))
     packets  = max(1, int(mtr_cfg.get("packets_per_cycle", 10)))
     interval = float(mtr_cfg.get("per_packet_interval", 1.0))
-    if interval <= 0:
-        interval = 0.1
     resolve_dns = bool(mtr_cfg.get("resolve_dns", False))
 
-    # 2) Build command (NO --report; YES --report-cycles)
-    #    This form is portable, keeps JSON clean, and gives constant-time runs.
-    cmd: list[str] = ["mtr", "--json"]
+    cmd = ["mtr", "--json"]
     if not resolve_dns:
         cmd.append("-n")
-    cmd += ["-c", str(packets)]
-    cmd += ["-i", str(interval)]
-    cmd += ["--report-cycles", str(cycles)]    # always include for predictability
-
-    # Optional: when a source is provided, hint family (-4/-6) to avoid mtr guessing
+    cmd += ["-c", str(packets), "-i", str(max(interval, 0.1))]
+    cmd += ["--report-cycles", str(cycles)]
     if source_ip:
         try:
             fam = ipaddress.ip_address(source_ip).version
-            cmd.insert(1, "-6" if fam == 6 else "-4")  # insert right after "mtr"
+            cmd.insert(1, "-6" if fam == 6 else "-4")
         except Exception:
             pass
-        cmd += ["--address", str(source_ip)]
+        cmd += ["--address", source_ip]
+    cmd.append(ip)
+    return cmd
 
-    cmd.append(str(ip))
+
+def _build_cmd_nonreport(ip: str, source_ip: Optional[str], settings: dict) -> list:
+    mtr_cfg = settings.get("mtr", {}) or {}
+    packets  = max(1, int(mtr_cfg.get("packets_per_cycle", 10)))
+    interval = float(mtr_cfg.get("per_packet_interval", 1.0))
+    resolve_dns = bool(mtr_cfg.get("resolve_dns", False))
+
+    cmd = ["mtr", "--json"]
+    if not resolve_dns:
+        cmd.append("-n")
+    cmd += ["-c", str(packets), "-i", str(max(interval, 0.1))]
+    if source_ip:
+        try:
+            fam = ipaddress.ip_address(source_ip).version
+            cmd.insert(1, "-6" if fam == 6 else "-4")
+        except Exception:
+            pass
+        cmd += ["--address", source_ip]
+    cmd.append(ip)
+    return cmd
+
+
+def _run_once(cmd: list, timeout: int, logger, label: str) -> Tuple[int, str, str]:
+    """Run a command in its own process group; return (rc, stdout, stderr)."""
     cmd_str = " ".join(shlex.quote(x) for x in cmd)
-
-    # 3) Compute timeout and log the rationale (great for troubleshooting)
-    timeout, why = _compute_timeout_report_mode(settings)
     if logger:
-        logger.debug(f"[{ip}] MTR cmd: {cmd_str}")
-        logger.debug(f"[{ip}] timeout calc → {why}")
-
-    # 4) Run MTR in its own process group; handle timeouts cleanly
+        logger.debug(f"{label} cmd: {cmd_str}")
+        logger.debug(f"{label} timeout: {timeout}s")
+    proc = subprocess.Popen(
+        cmd,
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        proc = subprocess.Popen(
-            cmd,
-            start_new_session=True,         # critical: kill the whole group on stop
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            pgid = os.getpgid(proc.pid)
+        except Exception:
+            pgid = None
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+        try:
+            proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            # TERM the group; escalate to KILL if it ignores us
-            try:
-                pgid = os.getpgid(proc.pid)
-            except Exception:
-                pgid = None
             if pgid is not None:
-                os.killpg(pgid, signal.SIGTERM)
+                os.killpg(pgid, signal.SIGKILL)
             else:
-                proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                if pgid is not None:
-                    os.killpg(pgid, signal.SIGKILL)
-                else:
-                    proc.kill()
-            if logger:
-                logger.warning(f"[{ip}] MTR timed out after {timeout}s; cmd={cmd_str}")
-            return []
-
-        # 5) Non-zero exit → warn and return []
-        if proc.returncode != 0:
-            if logger:
-                logger.warning(
-                    f"[{ip}] mtr exited {proc.returncode}; "
-                    f"stderr: {(stderr or '').strip() or '(none)'}; cmd={cmd_str}"
-                )
-            return []
-
-        # 6) Basic JSON sanity
-        if not stdout or not stdout.lstrip().startswith("{"):
-            if logger:
-                snip = (stdout or "").strip()[:400].replace("\n", "\\n")
-                logger.warning(f"[{ip}] mtr produced non-JSON/empty output; stdout_snip={snip} ; cmd={cmd_str}")
-            return []
-
-        # 7) Parse and normalize hubs
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError as je:
-            if logger:
-                logger.warning(f"[{ip}] failed to parse JSON: {je}; first 200 chars: {stdout[:200]!r}")
-            return []
-
-        report = (data or {}).get("report") or {}
-        hubs = report.get("hubs") or []
-        if not isinstance(hubs, list) or not hubs:
-            if logger:
-                logger.warning(f"[{ip}] mtr JSON has no hubs; cmd={cmd_str}")
-            return []
-
-        return [_normalize_hub(h) for h in hubs]
-
-    except FileNotFoundError:
+                proc.kill()
         if logger:
-            logger.error("mtr command not found. Install it (e.g., 'dnf install mtr' or 'apt install mtr').")
-        return []
-    except Exception as e:
+            logger.warning(f"{label} timed out after {timeout}s; cmd={cmd_str}")
+        return 124, "", f"timeout after {timeout}s"
+    return proc.returncode, stdout or "", stderr or ""
+
+
+def _parse(stdout: str, logger, label: str) -> List[Dict[str, Any]]:
+    if not stdout.lstrip().startswith("{"):
         if logger:
-            logger.exception(f"[{ip}] Unexpected error running mtr: {e}")
+            snip = stdout.strip()[:400].replace("\n", "\\n")
+            logger.warning(f"{label} produced non-JSON/empty output; stdout_snip={snip}")
         return []
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as je:
+        if logger:
+            logger.warning(f"{label} JSON parse failed: {je}; first 200 chars: {stdout[:200]!r}")
+        return []
+    hubs = (data.get("report") or {}).get("hubs") or []
+    if not hubs:
+        if logger:
+            logger.warning(f"{label} JSON has no hubs.")
+        return []
+    return [_norm(h) for h in hubs]
+
+
+def run_mtr(ip: str, source_ip: Optional[str], logger, settings: dict) -> List[Dict[str, Any]]:
+    """
+    Try report-cycles first (predictable, fast), otherwise fall back to non-report.
+    """
+    # 1) Try report-cycles
+    cmd1 = _build_cmd_report(ip, source_ip, settings)
+    t1, why1 = _timeout_report_mode(settings)
+    if logger:
+        logger.debug(f"[{ip}] timeout rationale (report-cycles) → {why1}")
+    rc, out, err = _run_once(cmd1, t1, logger, f"[{ip}] mtr (report-cycles)")
+    if rc == 0:
+        parsed = _parse(out, logger, f"[{ip}] mtr (report-cycles)")
+        if parsed:
+            return parsed
+        # If output was empty/invalid, continue to fallback.
+
+    # If rc != 0 and looks like the flag is unsupported, fall back gracefully.
+    unsupported = ("unrecognized option '--report-cycles'" in err.lower()
+                   or "unknown option" in err.lower()
+                   or "illegal option" in err.lower())
+    if rc != 0 and logger:
+        logger.warning(f"[{ip}] report-cycles mode failed rc={rc}; stderr={err.strip() or '(none)'}")
+
+    # 2) Fallback: non-report, hop-aware timeout
+    cmd2 = _build_cmd_nonreport(ip, source_ip, settings)
+    t2, why2 = _timeout_nonreport_mode(settings)
+    if logger:
+        logger.debug(f"[{ip}] timeout rationale (non-report) → {why2}")
+    rc2, out2, err2 = _run_once(cmd2, t2, logger, f"[{ip}] mtr (non-report)")
+    if rc2 != 0:
+        if logger:
+            logger.warning(f"[{ip}] non-report mode failed rc={rc2}; stderr={err2.strip() or '(none)'}")
+        return []
+    return _parse(out2, logger, f"[{ip}] mtr (non-report)")
