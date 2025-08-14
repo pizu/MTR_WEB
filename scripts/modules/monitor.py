@@ -146,7 +146,7 @@ def monitor_target(ip, source_ip, settings, logger):
     # -------------------
     while True:
         # 1) Execute a single MTR cycle and get a normalized list of hops
-        hops = run_mtr(ip, source_ip, logger)
+        hops = run_mtr(ip, source_ip, logger, settings=settings)
 
         # If the runner failed (timeout, unreachable, parsing error), wait and retry
         if not hops:
