@@ -187,8 +187,8 @@ def run_step(name: str, script_path: str):
     """Run a single pipeline step; log stdout/stderr, don’t raise."""
     try:
         logger.info(f"[pipeline] running {name} …")
-        p = subprocess.run([PYTHON, script_path], cwd=SCRIPTS_DIR,
-                           capture_output=True, text=True)
+        p = subprocess.run([PYTHON, script_path, SCRIPT_SETTINGS_FILE],
+                           cwd=SCRIPTS_DIR, capture_output=True, text=True)
         if p.returncode != 0:
             logger.warning(f"{name} exited {p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}")
         else:
