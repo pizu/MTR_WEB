@@ -46,13 +46,26 @@ def _save_stats(stats_path, stats):
         json.dump(stats, f, indent=2)
 
 # ---------------- Stats maintenance ----------------
-def _update_stats_with_snapshot(stats, hops):
+def _update_stats_with_snapshot(stats, hops, logger=None):
     """
     Update rolling counts keyed by hop index (string). Uses sticky modal logic
     and a soft decay window to avoid unbounded growth.
+
+    IMPORTANT: ignores hop_count < 1 to prevent phantom hop0.
     """
     for h in hops:
-        hop_idx = str(int(h.get("count", 0)))
+        # --- robust hop number extraction (>=1 only) ---
+        raw = h.get("count", 0)
+        try:
+            hop_num = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if hop_num < 1:
+            if logger:
+                logger.debug(f"[labels] skipping invalid hop count={raw} host={h.get('host')}")
+            continue
+
+        hop_idx = str(hop_num)
         host = h.get("host")
         if host is None:
             continue
@@ -118,10 +131,7 @@ def _realign_then_reset(stats, prev_hops, curr_hops, logger=None):
       - For each current hop, if its host matches a 'last' modal in the map,
         move that stats bucket to the new hop index.
       - Reset any leftover indexes that didn’t match.
-
-    This reduces cross-hop mixing when one hop is inserted/removed, but isn’t perfect.
     """
-    # Build reverse map from existing stats
     modal_to_oldidx = {}
     for idx_str, s in list(stats.items()):
         last = s.get("last")
@@ -132,9 +142,14 @@ def _realign_then_reset(stats, prev_hops, curr_hops, logger=None):
     new_stats = {}
     used_old = set()
 
-    # Try to place existing buckets onto current indices by modal host
     for h in curr_hops:
-        new_idx = int(h.get("count", 0))
+        raw = h.get("count", 0)
+        try:
+            new_idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if new_idx < 1:
+            continue
         host = h.get("host")
         candidates = modal_to_oldidx.get(host) or []
         chosen = None
@@ -147,14 +162,18 @@ def _realign_then_reset(stats, prev_hops, curr_hops, logger=None):
             used_old.add(chosen)
             moved += 1
 
-    # Replace stats with re-aligned buckets, keep unmatched below cutoff
     stats.clear()
     stats.update(new_stats)
 
-    # Now, reset any missing buckets beyond what we re-aligned
     for h in curr_hops:
-        idx = str(int(h.get("count", 0)))
-        stats.setdefault(idx, {"_order": [], "last": None, "wins": 0})
+        raw = h.get("count", 0)
+        try:
+            idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if idx < 1:
+            continue
+        stats.setdefault(str(idx), {"_order": [], "last": None, "wins": 0})
 
     if logger:
         logger.debug(f"[labels] realign_then_reset moved {moved} buckets; now {len(stats)} buckets total")
@@ -196,6 +215,11 @@ def _decide_label_per_hop(stats, hops_json_path, logger=None):
     labels = {}
     out = []
     for hop_str, s in sorted(stats.items(), key=lambda x: int(x[0])):
+        hop_int = int(hop_str)
+        if hop_int < 1:
+            # ignore any legacy "0" keys that might still be on disk
+            continue
+
         items = [(k, s[k]) for k in s if isinstance(s.get(k), int) and k not in IGNORE_HOSTS]
         total = sum(c for _, c in items)
         if total == 0:
@@ -203,7 +227,6 @@ def _decide_label_per_hop(stats, hops_json_path, logger=None):
         items.sort(key=lambda kv: -kv[1])
         top_host, top_count = items[0]
         share = top_count / total
-        hop_int = int(hop_str)
 
         if logger:
             logger.debug(
@@ -255,8 +278,19 @@ def monitor_target(ip, source_ip, settings, logger):
 
         hop_path_changed = hops_changed(prev_hops, hops)
 
-        curr_loss_state = {h.get("count"): round(h.get("Loss%", 0.0), 2)
-                           for h in hops if h.get("Loss%", 0.0) > 0.0}
+        curr_loss_state = {}
+        for h in hops:
+            raw = h.get("count", 0)
+            try:
+                hop_num = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if hop_num < 1:
+                continue
+            loss = h.get("Loss%", 0.0)
+            if loss and float(loss) > 0.0:
+                curr_loss_state[hop_num] = round(float(loss), 2)
+
         loss_changed = (curr_loss_state != prev_loss_state)
 
         if hop_path_changed:
@@ -298,14 +332,14 @@ def monitor_target(ip, source_ip, settings, logger):
         if hop_path_changed:
             _apply_reset_policy(stats, prev_hops, hops, settings, logger=logger)
 
-        # Now update stats with the current snapshot
-        stats = _update_stats_with_snapshot(stats, hops)
+        # Now update stats with the current snapshot (hop>=1 only)
+        stats = _update_stats_with_snapshot(stats, hops, logger=logger)
         _save_stats(stats_path, stats)
 
         # Decide labels from the freshly updated stats, write <ip>_hops.json
         _decide_label_per_hop(stats, hops_json_path, logger)
 
-        # Apply labels downstream (graphs/HTML read the updated file)
+        # Apply labels downstream (reads the fresh file; function is now idempotent)
         update_hop_labels_only(ip, hops, settings, logger)
 
         if hop_path_changed or loss_changed:
