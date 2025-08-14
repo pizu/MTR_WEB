@@ -2,8 +2,20 @@
 # modules/html_cleanup.py
 
 import os
+import sys
 
-def remove_orphan_html_files(html_dir, valid_ips, logger):
+HTML_DIR = resolve_html_dir_from_scripts(settings)
+
+def resolve_html_dir_from_scripts(settings):
+    html_dir = settings.get("html_directory", "html")
+    if not os.path.isabs(html_dir):
+        html_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", html_dir))
+    else:
+        html_dir = os.path.abspath(html_dir)
+    os.makedirs(html_dir, exist_ok=True)
+    return html_dir
+
+def remove_orphan_html_files(HTML_DIR, valid_ips, logger):
     """
     Removes any *.html files (except index.html) that do not correspond to current IPs.
 
