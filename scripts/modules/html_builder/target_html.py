@@ -14,32 +14,29 @@ import os, re, html
 from datetime import datetime
 from modules.utils import setup_logger, resolve_html_dir
 from modules.rrd_metrics import get_rrd_metrics
-from modules.html_cleanup import resolve_html_dir_from_scripts
-
 
 def generate_target_html(ip, description, hops, settings):
     logger = setup_logger("target_html", settings.get("log_directory", "/tmp"),
                           "target_html.log", settings=settings)
 
-    HTML_DIR = resolve_html_dir(settings)                    # <— canonical site root
-    DATA_DIR = os.path.join(HTML_DIR, "data")                # <— data under site root
+    HTML_DIR = resolve_html_dir(settings)
+    DATA_DIR = os.path.join(HTML_DIR, "data")
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    LOG_DIR         = settings.get("log_directory", "logs")
-    TRACEROUTE_DIR  = settings.get("traceroute_directory", "traceroute")
-    REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
-    LOG_LINES_DISPLAY = settings.get("log_lines_display", 50)
-    RRD_DIR         = settings.get("rrd_directory", "rrd")
+    LOG_DIR          = settings.get("log_directory", "logs")
+    TRACEROUTE_DIR   = settings.get("traceroute_directory", "traceroute")
+    REFRESH_SECONDS  = settings.get("html_auto_refresh_seconds", 0)
+    LOG_LINES_DISPLAY= settings.get("log_lines_display", 50)
+    RRD_DIR          = settings.get("rrd_directory", "rrd")
 
-    # Dropdown sources
-    TIME_RANGES  = [r for r in settings.get("graph_time_ranges", []) if r.get("label")]
-    METRICS      = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
+    TIME_RANGES = [r for r in settings.get("graph_time_ranges", []) if r.get("label")]
+    METRICS     = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", [])]
 
-    html_path = os.path.join(HTML_DIR, f"{ip}.html")
-    log_path  = os.path.join(LOG_DIR, f"{ip}.log")
-    trace_path= os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
+    html_path  = os.path.join(HTML_DIR, f"{ip}.html")
+    log_path   = os.path.join(LOG_DIR, f"{ip}.log")
+    trace_path = os.path.join(TRACEROUTE_DIR, f"{ip}.trace.txt")
 
-    # Tail logs (newest on top)
+    # Tail logs
     logs = []
     if os.path.exists(log_path):
         try:
@@ -67,7 +64,30 @@ def generate_target_html(ip, description, hops, settings):
                 f.write(f"<meta http-equiv='refresh' content='{REFRESH_SECONDS}'>")
             f.write(f"<title>{ip}</title>")
             f.write("""
-<style>/* …(styles unchanged)… */</style>
+<style>
+:root { --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --text:#e5e7eb; --border:#1f2937; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; }
+.wrap{ max-width:1100px; margin:32px auto; padding:0 16px; }
+.card{ background:var(--panel); border:1px solid var(--border); border-radius:16px; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+.card header{ padding:16px 20px; border-bottom:1px solid var(--border); }
+.card header h1{ font-size:18px; margin:0 0 4px; }
+.card header p{ margin:0; color:var(--muted); }
+.toolbar{ display:flex; gap:12px; align-items:center; justify-content:space-between; padding:12px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+.legend{ display:flex; flex-wrap:wrap; gap:10px; }
+.legend .item{ display:flex; align-items:center; gap:6px; padding:6px 10px; border:1px solid var(--border); border-radius:999px; cursor:pointer; user-select:none; }
+.legend .swatch{ width:12px; height:12px; border-radius:3px; border:1px solid #00000055; }
+.legend .item.dim{ opacity:.35; }
+.panel{ padding:16px 20px; }
+.note{ color:var(--muted); font-size:12px; margin-top:8px; }
+select{ background:#0b1220; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:6px 10px; }
+.chart-container{ width:100%; height:420px; }
+canvas{ width:100% !important; height:100% !important; }
+h3{ margin:18px 0 8px; }
+table { border-collapse: collapse; width:100%; }
+th, td { border: 1px solid #334155; padding: 6px 8px; text-align: left; }
+.log-line { white-space: pre-wrap; }
+.log-table pre { margin: 0; max-height: 140px; overflow:auto; background-color:#0b1220; padding:4px; border-radius: 4px; font-family: monospace; }
+</style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -78,14 +98,8 @@ def generate_target_html(ip, description, hops, settings):
       <p>Hover for tooltips; click legend chips to toggle; Alt+click to solo.</p>
     </header>
     <div class="toolbar">
-      <div>
-        <label for="metric">Metric:</label>
-        <select id="metric"></select>
-      </div>
-      <div>
-        <label for="range">Time Range:</label>
-        <select id="range"></select>
-      </div>
+      <div><label for="metric">Metric:</label> <select id="metric"></select></div>
+      <div><label for="range">Time Range:</label> <select id="range"></select></div>
       <div class="note">Data from RRD; labels from traceroute.</div>
     </div>
     <div class="panel">
@@ -98,14 +112,12 @@ def generate_target_html(ip, description, hops, settings):
   <h3>Traceroute</h3>
   <table><tr><th>Hop</th><th>Address</th><th>Details</th></tr>""")
 
-            # traceroute table (same as before)
             for idx, line in enumerate(traceroute, start=1):
                 parts = line.strip().split()
                 hop_ip = parts[1] if len(parts) >= 2 else "???"
                 latency = parts[2] + " " + parts[3] if len(parts) > 3 else (parts[2] if len(parts) > 2 else "-")
                 if hop_ip == "???" or hop_ip.lower() == "request" or hop_ip == "Request":
-                    hop_ip = "Request timed out"
-                    latency = "-"
+                    hop_ip = "Request timed out"; latency = "-"
                 f.write(f"<tr><td>{idx}</td><td>{html.escape(hop_ip)}</td><td>{html.escape(latency)}</td></tr>")
             f.write("</table>")
 
@@ -119,10 +131,8 @@ def generate_target_html(ip, description, hops, settings):
                 m = log_line_re.match(line)
                 ts, level, msg = m.groups() if m else ("", "", line)
                 color = {
-                    "DEBUG": "color:#94a3b8;",
-                    "INFO": "color:#86efac;",
-                    "WARNING": "color:#fbbf24;",
-                    "ERROR": "color:#f87171;"
+                    "DEBUG": "color:#94a3b8;", "INFO": "color:#86efac;",
+                    "WARNING": "color:#fbbf24;", "ERROR": "color:#f87171;"
                 }.get((level or "").upper(), "color:#e5e7eb;")
                 f.write(f"<tr class='log-line'><td>{ts}</td><td style='{color}'>{html.escape(level)}</td><td><pre>{html.escape(msg)}</pre></td></tr>")
             f.write("""</tbody></table>
@@ -134,7 +144,7 @@ def generate_target_html(ip, description, hops, settings):
 <script>
 const METRICS = """ + json_escape_js_array(METRICS := METRICS) + """;
 const RANGES  = """ + json_escape_js_array([r["label"] for r in TIME_RANGES]) + """;
-const DATA_DIR = "data";                  // relative to HTML_DIR
+const DATA_DIR = "data";
 const IP = """ + json_quote(ip) + """;
 
 const metricSel = document.getElementById('metric');
@@ -144,7 +154,7 @@ const ctx = document.getElementById('mtrChart').getContext('2d');
 
 function fillSelect(sel, arr) {
   sel.innerHTML = '';
-  arr.forEach((v,i) => {
+  arr.forEach((v) => {
     const opt = document.createElement('option');
     opt.value = v; opt.textContent = v.toUpperCase();
     sel.appendChild(opt);
@@ -191,16 +201,8 @@ let chart = new Chart(ctx, {
     },
     scales: {
       x: { grid: { color: '#1f2937' }, ticks: { color: '#cbd5e1' } },
-      yLatency: {
-        type: 'linear', position: 'left',
-        grid: { color: '#1f2937' }, ticks: { color: '#cbd5e1' },
-        title: { display: true, text: 'Latency (ms)' }
-      },
-      yLoss: {
-        type: 'linear', position: 'right',
-        grid: { drawOnChartArea: false }, ticks: { color: '#cbd5e1', callback: (v)=> v + '%' },
-        title: { display: true, text: 'Loss (%)' }, min: 0, max: 100
-      }
+      yLatency: { type: 'linear', position: 'left', grid: { color: '#1f2937' }, ticks: { color: '#cbd5e1' }, title: { display: true, text: 'Latency (ms)' } },
+      yLoss: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#cbd5e1', callback: (v)=> v + '%' }, title: { display: true, text: 'Loss (%)' }, min: 0, max: 100 }
     }
   }
 });
@@ -229,30 +231,21 @@ function renderLegend() {
   });
 }
 
-function fmtTime(epoch) {
-  const d = new Date(epoch * 1000);
-  return d.toLocaleString();
-}
+function fmtTime(epoch) { const d = new Date(epoch * 1000); return d.toLocaleString(); }
 
 async function loadBundle(rangeLabel) {
-  const url = `${DATA_DIR}/${IP}_${rangeLabel}.json?t=${Date.now()}`; // cache-buster
+  const url = `${DATA_DIR}/${IP}_${rangeLabel}.json?t=${Date.now()}`;
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`fetch failed: ${url}`);
   currentBundle = await res.json();
 
-  // update x-axis labels
   chart.data.labels = currentBundle.timestamps || [];
 
-  // show last updated (from the last epoch in the bundle)
   const last = (currentBundle.epoch && currentBundle.epoch.length)
-    ? currentBundle.epoch[currentBundle.epoch.length - 1]
-    : null;
+    ? currentBundle.epoch[currentBundle.epoch.length - 1] : null;
   const noteEl = document.querySelector('.note');
-  if (noteEl && last) {
-    noteEl.textContent = `Last updated: ${fmtTime(last)} (range: ${currentBundle.label})`;
-  }
+  if (noteEl && last) noteEl.textContent = `Last updated: ${fmtTime(last)} (range: ${currentBundle.label})`;
 
-  // Keep current metric if possible; else fall back
   const wanted = currentMetric && METRICS.includes(currentMetric) ? currentMetric : (METRICS[0] || 'avg');
   setMetric(wanted);
 }
@@ -269,20 +262,16 @@ async function onRangeChange() { await loadBundle(rangeSel.value); }
 function filterLogs() {
   const input = document.getElementById('logFilter').value.toLowerCase();
   const lines = document.getElementsByClassName('log-line');
-  for (const line of lines) {
-    line.style.display = line.innerText.toLowerCase().includes(input) ? '' : 'none';
-  }
+  for (const line of lines) line.style.display = line.innerText.toLowerCase().includes(input) ? '' : 'none';
 }
 
-// initialize
 fillSelect(metricSel, METRICS);
 fillSelect(rangeSel, RANGES);
 metricSel.addEventListener('change', onMetricChange);
 rangeSel.addEventListener('change', onRangeChange);
-onRangeChange();  // load first bundle
+onRangeChange();
 </script>
 </body></html>""")
-
         logger.info(f"Generated interactive HTML for {ip}")
     except Exception:
         logger.exception(f"[{ip}] Failed to generate target HTML")
