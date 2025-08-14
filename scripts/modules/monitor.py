@@ -16,7 +16,6 @@ YAML each cycle, pass a settings *path* and call `load_settings(...)` inside the
 import os               # filesystem paths (RRD locations, etc.)
 import json
 import time             # sleeping between iterations
-from modules.utils import setup_logger
 from deepdiff import DeepDiff  # diff previous vs current hop path lists
 
 # Import modular functions (keeps this file focused on orchestration)
@@ -84,8 +83,9 @@ def _update_stats_with_snapshot(stats, hops):
                 s["wins"] = 1
     return stats
 
-def _decide_label_per_hop(stats, hops_json_path):
-    labels = {}
+def _decide_label_per_hop(stats, hops_json_path, logger=None):
+    #labels = {}
+    labels = _decide_label_per_hop(stats, hops_json_path, logger)
     out = []
     for hop_str, s in sorted(stats.items(), key=lambda x: int(x[0])):
         # collect counts incl. '???' (we do NOT filter it out)
