@@ -84,32 +84,36 @@ def _update_stats_with_snapshot(stats, hops):
     return stats
 
 def _decide_label_per_hop(stats, hops_json_path, logger=None):
-    #labels = {}
-    labels = _decide_label_per_hop(stats, hops_json_path, logger)
+    labels = {}
     out = []
     for hop_str, s in sorted(stats.items(), key=lambda x: int(x[0])):
-        # collect counts incl. '???' (we do NOT filter it out)
+        # collect counts incl. '???'
         items = [(k, s[k]) for k in s if isinstance(s.get(k), int) and k not in IGNORE_HOSTS]
         total = sum(c for _, c in items)
         if total == 0:
             continue
         items.sort(key=lambda kv: -kv[1])
-        if total > 0 and logger:
-            logger.debug(
-                f"[{hop_int}] label-calc total={total} top={top_host} "
-                f"share={share:.2f} items={items[:TOPK_TO_SHOW]}"
-            )
 
         top_host, top_count = items[0]
         share = top_count / total
+
+        if logger:
+            hop_int = int(hop_str)
+            logger.debug(
+                f"[hop {hop_int}] label-calc total={total} top={top_host} "
+                f"share={share:.2f} items={items[:TOPK_TO_SHOW]}"
+            )
+
         if share < UNSTABLE_THRESHOLD and len(items) >= 2:
             sample = ", ".join(h for h, _ in items[:TOPK_TO_SHOW])
             host_label = f"varies ({sample})"
         else:
             host_label = s.get("last") or top_host
+
         hop_int = int(hop_str)
         labels[hop_int] = f"{hop_int}: {host_label}"
         out.append({"count": hop_int, "host": host_label})
+
     if out:
         open(hops_json_path, "w", encoding="utf-8").write(json.dumps(out, indent=2))
     return labels
