@@ -15,7 +15,7 @@ def generate_index_page(targets, settings, logger):
     Builds the index.html page from the list of targets and settings.
     Columns: IP | Description | Status | Last Seen
     """
-    HTML_DIR        = "html"
+    HTML_DIR = resolve_html_dir(settings)
     LOG_DIR         = settings.get("log_directory", "logs")
     ENABLE_FPING    = settings.get("enable_fping_check", True)
     FPING_PATH      = settings.get("fping_path", None)
