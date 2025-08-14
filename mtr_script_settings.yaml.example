@@ -5,6 +5,9 @@
 # === Logging ===
 log_directory: /opt/scripts/MTR_WEB/logs/
 
+# === HTML Directory ===
+html_directory: /opt/scripts/MTR_WEB/html/
+
 # Per-script log levels (used by setup_logger)
 logging_levels:
   controller: INFO
