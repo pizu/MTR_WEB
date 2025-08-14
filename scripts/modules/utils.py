@@ -25,6 +25,7 @@ logging_levels:                                     # Per-script log levels (opt
 import os
 import yaml
 import logging
+from pathlib import Path
 
 def load_settings(settings_path=None):
     if settings_path is None:
@@ -33,6 +34,50 @@ def load_settings(settings_path=None):
         settings_path = os.path.join(base_dir, "mtr_script_settings.yaml")
     with open(settings_path, 'r') as f:
         return yaml.safe_load(f)
+
+def repo_root() -> str:
+    """
+    Absolute path to the repo root.
+    utils.py lives in: <repo>/scripts/modules/utils.py
+    So repo root = parents[2].
+    """
+    return str(Path(__file__).resolve().parents[2])
+
+def resolve_html_dir(settings: dict) -> str:
+    """
+    Resolve the website root where index/<ip>.html, data/, graphs/ live.
+    - If settings['html_directory'] is absolute, use it.
+    - If relative (or missing), resolve relative to repo_root().
+    Ensures the directory exists.
+    """
+    root = Path(repo_root())
+    html_dir = settings.get("html_directory", "html")
+    p = Path(html_dir)
+    if not p.is_absolute():
+        p = root / html_dir
+    p = p.resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+def resolve_graphs_dir(settings: dict) -> str:
+    """
+    Default graphs dir is <html_dir>/graphs unless graph_output_directory overrides it.
+    Ensures the directory exists.
+    """
+    override = settings.get("graph_output_directory")
+    if override:
+        p = Path(override)
+        if not p.is_absolute():
+            p = Path(repo_root()) / override
+    else:
+        p = Path(resolve_html_dir(settings)) / "graphs"
+    p = p.resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+def resolve_targets_path() -> str:
+    """Absolute path to mtr_targets.yaml at repo root."""
+    return str(Path(repo_root()) / "mtr_targets.yaml")
 
 def setup_logger(name, log_directory, log_filename, settings=None, default_level="INFO", extra_file=None):
     """
