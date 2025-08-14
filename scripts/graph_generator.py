@@ -14,12 +14,10 @@ from modules.graph_state import load_run_index, save_run_index
 from modules.graph_jobs import plan_jobs_for_targets
 from modules.graph_workers import graph_summary_work, graph_hop_work
 
-settings_file = sys.argv[1] if len(sys.argv) > 1 else "mtr_script_settings.yaml"
-settings = load_settings(settings_file)
-
-
 def main():
-    settings = load_settings("mtr_script_settings.yaml")
+    default_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mtr_script_settings.yaml"))
+    settings_path = sys.argv[1] if len(sys.argv) > 1 else default_path
+    settings = load_settings(settings_path)
     logger = setup_logger("graph_generator", settings.get("log_directory", "/tmp"),
                           "graph_generator.log", settings=settings)
 
