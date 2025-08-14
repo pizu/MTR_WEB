@@ -5,6 +5,7 @@ Keeps the main file tiny and readable.
 """
 import os
 import time
+import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 from modules.utils import load_settings, setup_logger
@@ -12,6 +13,11 @@ from modules.graph_config import load_graph_config
 from modules.graph_state import load_run_index, save_run_index
 from modules.graph_jobs import plan_jobs_for_targets
 from modules.graph_workers import graph_summary_work, graph_hop_work
+
+import sys
+settings_file = sys.argv[1] if len(sys.argv) > 1 else "mtr_script_settings.yaml"
+settings = load_settings(settings_file)
+
 
 def main():
     settings = load_settings("mtr_script_settings.yaml")
