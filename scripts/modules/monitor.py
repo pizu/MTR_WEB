@@ -16,6 +16,7 @@ YAML each cycle, pass a settings *path* and call `load_settings(...)` inside the
 import os               # filesystem paths (RRD locations, etc.)
 import json
 import time             # sleeping between iterations
+from modules.utils import setup_logger
 from deepdiff import DeepDiff  # diff previous vs current hop path lists
 
 # Import modular functions (keeps this file focused on orchestration)
