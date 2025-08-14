@@ -221,7 +221,7 @@ def monitor_target(ip, source_ip, settings, logger):
         stats = _load_stats(stats_path)
         stats = _update_stats_with_snapshot(stats, hops)
         _save_stats(stats_path, stats)
-        labels = _decide_label_per_hop(stats, hops_json_path)  # writes <ip>_hops.json
+        labels = _decide_label_per_hop(stats, hops_json_path, logger)  # writes <ip>_hops.json
 
         # 5b) Now apply those labels (RRD/HTML helpers can read the fresh file)
         update_hop_labels_only(ip, hops, settings, logger)
