@@ -103,7 +103,7 @@ def run_mtr(ip: str,
 
     # ---- Build the mtr command line ----
     # We use --json and the "report" mode so we get a stable summary quickly.
-    cmd: list[str] = ["mtr", "--json", "--report"]
+    cmd: list[str] = ["mtr", "--json"]
 
     # -n disables DNS resolution for consistency unless the user enabled it
     if not resolve_dns:
