@@ -14,6 +14,14 @@ def _default_settings_path() -> str:
     """Return the repo-root mtr_script_settings.yaml (../ from scripts/)."""
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mtr_script_settings.yaml"))
 
+def resolve_html_dir_from_scripts(settings):
+    html_dir = settings.get("html_directory", "html")
+    if not os.path.isabs(html_dir):
+        html_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", html_dir))
+    else:
+        html_dir = os.path.abspath(html_dir)
+    os.makedirs(html_dir, exist_ok=True)
+    return html_dir
 def _targets_path() -> str:
     """Return the repo-root mtr_targets.yaml (../ from scripts/)."""
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mtr_targets.yaml"))
@@ -24,7 +32,7 @@ settings = load_settings(settings_path)
 log_directory = settings.get("log_directory", "/tmp")
 logger = setup_logger("html_generator", log_directory, "html_generator.log", settings=settings)
 
-HTML_DIR = "html"
+HTML_DIR = resolve_html_dir_from_scripts(settings)
 
 # Load targets (from repo root)
 targets_file = _targets_path()
