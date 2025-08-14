@@ -67,11 +67,16 @@ traceroute_directory: /opt/scripts/MTR_WEB/traces/
 
 # === Monitoring ===
 mtr:
-  report_cycles: 1        # how many report snapshots mtr takes in one run (1 = current behavior)
-  packets_per_cycle: 10   # optional: -c <N> packets per report snapshot
-  resolve_dns: false      # if true, drop -n
-  per_packet_interval: 1.0   # seconds between packets (maps to -i)
-  timeout_seconds: 0         # 0 = auto (cycles*packets*interval + 5)
+  report_cycles: 1          # how many report snapshots per run
+  packets_per_cycle: 10     # -c <N> per snapshot
+  resolve_dns: false        # -n when false
+  per_packet_interval: 1.0  # -i seconds
+  timeout_seconds: 0        # 0 = auto (cycles*packets*interval * multiplier + margin)
+  # optional fine‑tuning (all optional):
+  timeout_multiplier: 1.0
+  timeout_margin_seconds: 5
+  timeout_floor_seconds: 10
+
 runner:
   loop_enabled: true      # if true, monitor loops forever with sleep(interval_seconds)
 interval_seconds: 60
