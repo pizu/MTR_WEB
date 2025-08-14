@@ -8,7 +8,7 @@ import time
 import sys
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
-from modules.utils import load_settings, setup_logger
+from modules.utils import load_settings, setup_logger, resolve_graphs_dir
 from modules.graph_config import load_graph_config
 from modules.graph_state import load_run_index, save_run_index
 from modules.graph_jobs import plan_jobs_for_targets
