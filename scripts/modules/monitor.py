@@ -93,6 +93,12 @@ def _decide_label_per_hop(stats, hops_json_path):
         if total == 0:
             continue
         items.sort(key=lambda kv: -kv[1])
+        if total > 0 and logger:
+            logger.debug(
+                f"[{hop_int}] label-calc total={total} top={top_host} "
+                f"share={share:.2f} items={items[:TOPK_TO_SHOW]}"
+            )
+
         top_host, top_count = items[0]
         share = top_count / total
         if share < UNSTABLE_THRESHOLD and len(items) >= 2:
