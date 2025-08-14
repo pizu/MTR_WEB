@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from datetime import datetime
+from modules.utils import resolve_html_dir, resolve_graphs_dir
 
 # Ensure local imports work no matter the CWD
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -28,8 +29,8 @@ logger = setup_logger("cleanup", settings.get("log_directory", "/tmp"), "cleanup
 # Directories from settings
 RRD_DIR         = settings.get("rrd_directory", "data")
 TRACEROUTE_DIR  = settings.get("traceroute_directory", "traceroute")
-GRAPH_DIR       = settings.get("graph_output_directory", "html/graphs")
-HTML_DIR        = "html"
+GRAPH_DIR       = resolve_graphs_dir(settings)
+HTML_DIR        = resolve_html_dir(settings)
 LOG_DIR         = settings.get("log_directory", "logs")
 
 # Retention days per type
