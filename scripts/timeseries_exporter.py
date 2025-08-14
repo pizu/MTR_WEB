@@ -8,12 +8,15 @@ Generates Chart.js-friendly JSON files for each target & time range:
 Run this before html_generator.py (or add as a step in your controller/cron).
 """
 
-import os, yaml
+import os, yaml, sys
 from modules.utils import load_settings, setup_logger
 from modules.rrd_exporter import export_ip_timerange_json
 
 def main():
-    settings = load_settings("mtr_script_settings.yaml")
+  return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "mtr_script_settings.yaml"))
+  settings_path = sys.argv[1] if len(sys.argv) > 1 else _default_settings_path()
+  settings = load_settings(settings_path)
+  
     logger = setup_logger("timeseries_exporter", settings.get("log_directory", "/tmp"),
                           "timeseries_exporter.log", settings=settings)
 
