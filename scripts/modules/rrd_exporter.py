@@ -36,7 +36,8 @@ import time
 import json
 import rrdtool
 from datetime import datetime
-from modules.graph_utils import get_labels  # hop legend labels
+from modules.graph_utils import get_labels
+from modules.utils import resolve_html_dir
 
 def _color(hop_index: int) -> str:
     """Deterministic color per hop (matches graph_workers)."""
@@ -72,8 +73,8 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     Returns the output file path.
     """
     RRD_DIR   = settings.get("rrd_directory", "rrd")
-    HTML_DIR = resolve_html_dir(settings)
-    DATA_DIR = os.path.join(HTML_DIR, "data")
+    HTML_DIR = resolve_html_dir(settings) 
+    DATA_DIR = os.path.join(HTML_DIR, "data") 
     os.makedirs(DATA_DIR, exist_ok=True)
     _ensure_dir(os.path.join(DATA_DIR, "x"))  # ensure folder exists
 
