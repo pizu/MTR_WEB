@@ -17,6 +17,7 @@ import subprocess
 import threading
 from datetime import datetime
 from modules.utils import load_settings, setup_logger
+from typing import Optional
 
 # --- Paths -------------------------------------------------------------------
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -79,7 +80,7 @@ class MonitorProc:
 monitored = {}  # ip -> MonitorProc
 lock = threading.Lock()
 
-def start_monitor(ip: str, source_ip: str | None):
+def start_monitor(ip: str, source_ip: Optional[str]):
     """Start one mtr_watchdog.py for the IP, passing absolute settings path."""
     try:
         cmd = [PYTHON, MONITOR_SCRIPT, "--target", ip, "--settings", SETTINGS_FILE]
