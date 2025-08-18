@@ -63,7 +63,7 @@ from typing import Optional
 # We import load_settings() and setup_logger() from your shared utils module to:
 #   - read the YAML once at startup (and again on change),
 #   - create a rotating, formatted logger writing to the configured log directory.
-from modules.utils import load_settings, setup_logger
+from modules.utils import load_settings, setup_logger, refresh_logger_levels
 
 
 # =========================
