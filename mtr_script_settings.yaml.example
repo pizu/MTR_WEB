@@ -32,6 +32,10 @@ labels:
   # realign_then_reset -> try to match hosts to previous hop stats before resetting rest
   # all                -> reset stats for all hops whenever path changes
   reset_mode: from_first_diff
+  unstable_threshold: 0.60           # sensitivity for "varies"
+  majority_window: 60                # how fast stats adapt
+  sticky_min_wins: 3                 # hysteresis for modal host flips
+  topk_to_show: 4                    # how many hosts to list inside "varies (...)"
 
 # === Controller Settings (Optional) ===
 controller:
