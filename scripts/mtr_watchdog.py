@@ -19,7 +19,7 @@ import argparse
 # Ensure 'modules' is importable when running from the scripts/ directory
 sys.path.insert(0, os.path.dirname(__file__))
 
-from modules.utils import load_settings, setup_logger
+from modules.utils import load_settings, setup_logger, refresh_logger_levels
 from modules.monitor import monitor_target  # the long-running loop
 
 # -----------------------------
