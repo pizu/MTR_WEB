@@ -41,6 +41,7 @@ args = parser.parse_args()
 settings = load_settings(args.settings)
 
 # Where to write logs (falls back to /tmp if not set).
+refresh_logger_levels(logger, "mtr_watchdog", settings)
 log_directory = settings.get("log_directory", "/tmp")
 
 # Create a logger named 'mtr_watchdog'.
