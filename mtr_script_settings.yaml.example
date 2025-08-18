@@ -10,12 +10,16 @@ html_directory: /opt/scripts/MTR_WEB/html/
 
 # Per-script log levels (used by setup_logger)
 logging_levels:
-  controller: INFO
-  mtr_monitor: DEBUG
-  graph_generator: INFO
-  html_generator: INFO
-  html_builder: INFO
-  index_generator: INFO
+  controller: ERROR
+  mtr_watchdog: ERROR
+  mtr_monitor: ERROR
+  graph_generator: ERROR
+  timeseries_exporter: ERROR
+  html_generator: ERROR
+  html_builder: ERROR
+  index_generator: ERROR
+  target_html: ERROR
+  rrd: ERROR
 
 # === RRD and Graphing ===
 rrd_directory: /opt/scripts/MTR_WEB/data/
