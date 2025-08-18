@@ -31,12 +31,12 @@ import os
 import yaml
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # -------------------------------
 # Settings helpers
 # -------------------------------
-def load_settings(settings_path: str | None = None) -> Dict[str, Any]:
+def load_settings(settings_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Load YAML settings. If path is None, assume repo_root/mtr_script_settings.yaml.
     """
@@ -157,9 +157,9 @@ def setup_logger(
     name: str,
     log_directory: str,
     log_filename: str,
-    settings: Dict[str, Any] | None = None,
-    default_level: str | int = "INFO",
-    extra_file: str | None = None,
+    settings: Optional[Dict[str, Any]] = None,
+    default_level: str | int = "INFO",   # this is fine; int|str works since both are builtin types
+    extra_file: Optional[str] = None,
 ) -> logging.Logger:
     """
     Create or retrieve a logger:
