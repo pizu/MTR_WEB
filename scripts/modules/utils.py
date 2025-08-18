@@ -31,7 +31,7 @@ import os
 import yaml
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 # -------------------------------
 # Settings helpers
@@ -99,8 +99,7 @@ _LEVELS = {
     "INFO":     logging.INFO,     "info":     logging.INFO,
     "DEBUG":    logging.DEBUG,    "debug":    logging.DEBUG,
 }
-
-def _resolve_level(name: str, settings: Dict[str, Any], default_level: str | int = "INFO") -> int:
+def _resolve_level(name: str, settings: Dict[str, Any], default_level: Union[str, int] = "INFO") -> int:
     """
     Resolve an integer log level for a given logger name from settings.logging_levels.
     Falls back to default_level (string or int).
@@ -158,7 +157,7 @@ def setup_logger(
     log_directory: str,
     log_filename: str,
     settings: Optional[Dict[str, Any]] = None,
-    default_level: str | int = "INFO",   # this is fine; int|str works since both are builtin types
+    default_level: Union[str, int] = "INFO",
     extra_file: Optional[str] = None,
 ) -> logging.Logger:
     """
