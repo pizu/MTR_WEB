@@ -93,6 +93,8 @@ PYTHON = sys.executable or "/usr/bin/python3"
 # =========================
 # We load settings immediately so we can initialize logging (log dir/name, level, etc.).
 settings = load_settings(SETTINGS_FILE)
+refresh_logger_levels(logger, "controller", settings)
+
 logger = setup_logger(
     "controller",
     settings.get("log_directory", "/tmp"),
