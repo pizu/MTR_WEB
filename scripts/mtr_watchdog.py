@@ -4,78 +4,102 @@ mtr_watchdog.py
 ---------------
 Per-target launcher invoked by controller.py.
 
-Responsibilities:
+Responsibilities (for dummies):
   1) Parse CLI args (--settings, --target, --source).
-  2) Load YAML settings.
+  2) Load YAML settings from mtr_script_settings.yaml.
   3) Initialize logging with a logger named 'mtr_watchdog' (+ per-target extra file).
-  4) Import and call the actual monitor loop: monitor_target(ip, source_ip, settings, logger)
-     - Prefer modules.monitor.monitor_target
-     - Fallback to legacy scripts/mtr_monitor.monitor_target
+  4) Import and call the actual monitor loop function (monitor_target) from your codebase.
+
+Compatibility:
+- This script tries multiple module paths to find a function called `monitor_target`:
+    modules.monitor.monitor_target
+    modules.mtr_monitor.monitor_target
+    modules.mtr_runner.monitor_target
+    modules.mtr.monitor_target
+    mtr_monitor.monitor_target   (legacy file directly under scripts/)
+- It will call the function with only the parameters it accepts among:
+    ip, source_ip, settings, logger
+  using Python introspection (inspect.signature), so older/newer variants still work.
 
 Exit codes:
-  0 = clean stop (Ctrl+C or normal return from monitor)
-  1 = bad arguments / settings / initialization failure
-  2 = monitor crashed with an unexpected exception
+  0 = clean stop (Ctrl+C or monitor exits normally)
+  1 = bad arguments / failed settings or logging initialization / no monitor found
+  2 = monitor crashed with an unexpected exception (controller may restart it)
 
-NOTE:
-- Ensure 'mtr_watchdog' exists in mtr_script_settings.yaml under logging_levels, e.g.:
-    logging_levels:
-      mtr_watchdog: ERROR
+YAML reminder:
+Ensure `logging_levels.mtr_watchdog` exists, e.g.:
+  logging_levels:
+    mtr_watchdog: ERROR
 """
 
 import os
 import sys
 import argparse
 import logging
-from typing import Optional
+import importlib
+import inspect
+from typing import Optional, Callable, Tuple, Dict, Any, List
 
-# --- Make sure 'modules' is importable even when launched by systemd from repo root ---
+# --- Ensure 'modules' is importable even when launched from systemd ---
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
+REPO_ROOT   = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))
 MODULES_DIR = os.path.join(SCRIPTS_DIR, "modules")
-if MODULES_DIR not in sys.path:
-    sys.path.insert(0, MODULES_DIR)
 
-# Shared helpers
+for p in (SCRIPTS_DIR, MODULES_DIR, REPO_ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+# --- Shared helpers (settings + logging) ---
 try:
-    from modules.utils import load_settings, setup_logger, refresh_logger_levels
+    from modules.utils import load_settings, setup_logger  # refresh_logger_levels not needed here
 except Exception as e:
     print(f"[FATAL] Cannot import modules.utils: {e}", file=sys.stderr)
     sys.exit(1)
 
 
-def _import_monitor_target():
+def _candidates() -> List[Tuple[str, str]]:
     """
-    Try modern modular path first, then fallback to legacy layout.
-    Returns: (callable monitor_target, origin_string)
-    Raises: ImportError if neither is available.
+    Ordered list of (module_path, attr_name) to try for the monitor entrypoint.
+    You can add more if your layout changes.
     """
-    # A) modules.monitor.monitor_target
-    try:
-        from modules.monitor import monitor_target  # type: ignore
-        return monitor_target, "modules.monitor"
-    except Exception:
-        pass
+    return [
+        ("modules.monitor", "monitor_target"),
+        ("modules.mtr_monitor", "monitor_target"),
+        ("modules.mtr_runner", "monitor_target"),
+        ("modules.mtr", "monitor_target"),
+        ("mtr_monitor", "monitor_target"),  # legacy scripts/mtr_monitor.py
+    ]
 
-    # B) legacy scripts/mtr_monitor.py
-    try:
-        if SCRIPTS_DIR not in sys.path:
-            sys.path.insert(0, SCRIPTS_DIR)
-        from mtr_monitor import monitor_target  # type: ignore
-        return monitor_target, "mtr_monitor"
-    except Exception as e:
-        raise ImportError(
-            "Could not import monitor_target from modules.monitor or mtr_monitor. "
-            f"Original error: {e}"
-        )
+
+def _import_monitor_target() -> Tuple[Callable[..., Any], str]:
+    """
+    Try importing monitor_target from various modules.
+    Returns:
+        (callable, "module_path.attr")
+    Raises:
+        ImportError with a combined message if none match.
+    """
+    errors = []
+    for mod_path, attr in _candidates():
+        try:
+            mod = importlib.import_module(mod_path)
+            func = getattr(mod, attr)
+            if callable(func):
+                return func, f"{mod_path}.{attr}"
+            errors.append(f"{mod_path}.{attr} found but not callable")
+        except Exception as e:
+            errors.append(f"{mod_path}.{attr}: {e}")
+    raise ImportError("None of the candidate monitor entrypoints could be imported:\n  - " + "\n  - ".join(errors))
 
 
 def parse_args() -> argparse.Namespace:
     """
-    Parse CLI arguments.
-    --settings defaults to repo_root/mtr_script_settings.yaml (works when run from scripts/).
+    CLI:
+      --settings: path to mtr_script_settings.yaml
+      --target  : required IP/host
+      --source  : optional source IP to bind
     """
-    default_settings = os.path.join(os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir)), "mtr_script_settings.yaml")
-
+    default_settings = os.path.join(REPO_ROOT, "mtr_script_settings.yaml")
     parser = argparse.ArgumentParser(description="Launch per-target MTR monitor loop.")
     parser.add_argument("--settings", default=default_settings,
                         help=f"Path to YAML settings (default: {default_settings})")
@@ -86,18 +110,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _call_monitor_compat(func: Callable[..., Any],
+                         ip: str,
+                         source_ip: Optional[str],
+                         settings: Dict[str, Any],
+                         logger: logging.Logger) -> None:
+    """
+    Call the discovered monitor function with only the kwargs it accepts.
+    Supported keywords: ip, source_ip, settings, logger
+    """
+    sig = inspect.signature(func)
+    supported = set(sig.parameters.keys())
+    kwargs = {}
+    if "ip" in supported:         kwargs["ip"] = ip
+    if "target" in supported:     kwargs["target"] = ip  # tolerate older name
+    if "source_ip" in supported:  kwargs["source_ip"] = source_ip
+    if "source" in supported:     kwargs["source"] = source_ip  # tolerate older name
+    if "settings" in supported:   kwargs["settings"] = settings
+    if "logger" in supported:     kwargs["logger"] = logger
+    func(**kwargs)
+
+
 def main() -> int:
-    # 1) Arguments
+    # 1) Parse args
     args = parse_args()
 
-    # 2) Settings
+    # 2) Load settings
     try:
         settings = load_settings(args.settings)
     except Exception as e:
         print(f"[FATAL] Failed to load settings '{args.settings}': {e}", file=sys.stderr)
         return 1
 
-    # 3) Logging — create the logger FIRST, then optionally refresh later
+    # 3) Initialize logging (create first; you can refresh later if you add hot-reload)
     try:
         log_dir = settings.get("log_directory", "/tmp")
         logger = setup_logger(
@@ -105,28 +150,26 @@ def main() -> int:
             log_dir,
             "mtr_watchdog.log",
             settings=settings,
-            # Per-target extra file helps when tailing specific targets (e.g., 8.8.8.8.log)
-            extra_file=f"{args.target}.log",
+            extra_file=f"{args.target}.log",   # per-target logfile: e.g., logs/8.8.8.8.log
         )
-        # If you later add hot-reload of settings in this file, call:
-        # refresh_logger_levels(logger, "mtr_watchdog", settings)
     except Exception as e:
         print(f"[FATAL] Failed to initialize logging: {e}", file=sys.stderr)
         return 1
 
     logger.info(f"[{args.target}] Watchdog starting (settings='{args.settings}', source='{args.source}')")
 
-    # 4) Import monitor_target implementation
+    # 4) Import monitor entrypoint
     try:
         monitor_target, origin = _import_monitor_target()
-        logger.debug(f"[{args.target}] Using monitor_target from {origin}")
+        logger.debug(f"[{args.target}] Using monitor entrypoint: {origin}")
     except Exception as e:
         logger.error(f"[{args.target}] {e}")
         return 1
 
-    # 5) Call the monitor loop
+    # 5) Call the monitor with compatibility wrapper
     try:
-        monitor_target(
+        _call_monitor_compat(
+            monitor_target,
             ip=args.target,
             source_ip=args.source,
             settings=settings,
