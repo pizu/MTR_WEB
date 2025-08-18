@@ -2,13 +2,20 @@
 import os
 import time
 import rrdtool
+import logging
 from datetime import datetime
+
+def _get_logger(logger):
+    # If caller didn't pass a logger, use the shared 'rrd' logger name
+    return logger if logger is not None else logging.getLogger("rrd")
 
 def init_rrd(rrd_path, settings, logger):
     """
     Creates a single RRD file to store all hop metrics in one place (optional).
     NOTE: DS names start at hop1_* (no hop0).
     """
+    logger = _get_logger(logger)
+    
     if os.path.exists(rrd_path):
         return
 
@@ -42,6 +49,7 @@ def init_per_hop_rrds(ip, settings, logger):
     Creates separate RRD files per hop (e.g., 1.1.1.1_hop1.rrd, hop2.rrd, ...).
     NOTE: starts at hop1 (no hop0 files).
     """
+    logger = _get_logger(logger)
     rrd_config = settings.get("rrd", {})
     step = rrd_config.get("step", 60)
     heartbeat = rrd_config.get("heartbeat", 120)
@@ -77,6 +85,7 @@ def update_rrd(rrd_path, hops, ip, settings, debug_log=True):
 
     We strictly use hop numbers >= 1 (MTR's 'count'); hop0 is ignored.
     """
+    logger = _get_logger(logger)
     rrd_config = settings.get("rrd", {})
     ds_schema = rrd_config.get("data_sources", [])
     rrd_dir = settings.get("rrd_directory", "rrd")
@@ -115,7 +124,7 @@ def update_rrd(rrd_path, hops, ip, settings, debug_log=True):
         try:
             rrdtool.update(rrd_path, update_str)
         except rrdtool.OperationalError as e:
-            print(f"[RRD ERROR] {e}")
+            logger.error(f"[RRD ERROR] {e}")
 
         if debug_log:
             with open(debug_log if isinstance(debug_log, str) else os.path.join(rrd_dir, "rrd_debug.log"), "a") as f:
@@ -126,7 +135,7 @@ def update_rrd(rrd_path, hops, ip, settings, debug_log=True):
         hop_rrd_path = os.path.join(rrd_dir, f"{ip}_hop{i}.rrd")
         if not os.path.exists(hop_rrd_path):
             # If a specific hop didn't exist yet (new higher hop), try to create on the fly
-            init_per_hop_rrds(ip, settings, logger=None)  # safe even if None; or pre-create upfront
+            init_per_hop_rrds(ip, settings, logger)
             if not os.path.exists(hop_rrd_path):
                 continue
 
@@ -147,7 +156,7 @@ def update_rrd(rrd_path, hops, ip, settings, debug_log=True):
         try:
             rrdtool.update(hop_rrd_path, f"{ts}:" + ":".join(fields))
         except rrdtool.OperationalError as e:
-            print(f"[RRD ERROR] {e}")
+            logger.error(f"[RRD ERROR] {e}"))
         if debug_log:
             with open(debug_log if isinstance(debug_log, str) else os.path.join(rrd_dir, "rrd_debug.log"), "a") as f:
                 f.write(f"{datetime.now()} {ip} hop{i} fields: {fields}\n")
