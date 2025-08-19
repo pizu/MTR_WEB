@@ -43,8 +43,16 @@ labels:
 
 # === Controller Settings (Optional) ===
 controller:
+  # How often the controller scans for changes (settings/targets) and does health checks.
+  # Older key 'scan_interval_seconds' is also accepted as a fallback.
   loop_seconds: 15
+
+  # How often to run the full reporting pipeline regardless of changes.
+  # Older key 'pipeline_run_every_seconds' is also accepted.
   pipeline_every_seconds: 120
+
+  # Whether to run the reporting pipeline immediately whenever settings/targets change.
+  # Older key 'pipeline_run_on_change' is also accepted.
   rerun_pipeline_on_changes: true
 
 
