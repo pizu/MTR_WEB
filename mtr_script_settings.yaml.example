@@ -101,6 +101,7 @@ charts:
   renderer: chartjs
   export_on_change_only: true
   legend_show: true
+  show_varies: true
 
 # =========
 # Calendar
