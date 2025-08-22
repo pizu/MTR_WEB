@@ -2,32 +2,18 @@
 """
 modules/rrd_exporter.py
 
-Exports interactive-friendly JSON time series for a target IP and a given time range label.
-Output path: html/data/<ip>_<label>.json
+Exports interactive‑friendly JSON time series for a target IP and a given time range label.
+Output path: <paths.html>/data/<ip>_<label>.json
 
-JSON schema:
-{
-  "ip": "1.1.1.1",
-  "label": "1h",
-  "seconds": 3600,
-  "step": 60,
-  "timestamps": ["10:00","10:01", ...],  # human-friendly HH:MM
-  "epoch": [1723545600, 1723545660, ...],
-  "hops": [
-    {
-      "hop": 0,
-      "name": "0: 192.0.2.1",          # from traceroute labels (stabilized)
-      "color": "#60a5fa",               # deterministic per hop
-      "metrics": {
-        "avg":  [.., .., ..],
-        "last": [.., .., ..],
-        "best": [.., .., ..],
-        "loss": [.., .., ..]
-      }
-    },
-    ...
-  ]
-}
+Reads paths from settings['paths'] (with legacy fallbacks handled by utils):
+- RRDs:       resolve_all_paths(settings)['rrd']
+- HTML root:  resolve_html_dir(settings)  -> ensures exists
+- Traceroute: resolve_all_paths(settings)['traceroute']
+
+Notes for beginners:
+- If an RRD does not exist yet (monitor hasn’t written any samples), we write a small "stub"
+  JSON so the UI can still load without errors. Once the RRD is created, subsequent runs
+  will produce real data.
 """
 
 import os
@@ -36,8 +22,9 @@ import time
 import json
 import rrdtool
 from datetime import datetime
+
 from modules.graph_utils import get_labels
-from modules.utils import resolve_html_dir
+from modules.utils import resolve_html_dir, resolve_all_paths  # <- NEW
 
 def _color(hop_index: int) -> str:
     """Deterministic color per hop (matches graph_workers)."""
@@ -47,14 +34,14 @@ def _color(hop_index: int) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def _fmt_ts(epoch: int) -> str:
-    """Human-friendly HH:MM timestamps for the x-axis."""
+    """Human‑friendly HH:MM timestamps for the x‑axis."""
     try:
         return datetime.fromtimestamp(epoch).strftime("%H:%M")
     except Exception:
         return ""
 
 def _nan_to_none(v):
-    """Convert NaN/None/non-numeric to None for JSON."""
+    """Convert NaN/None/non‑numeric to None for JSON."""
     try:
         if v is None:
             return None
@@ -72,14 +59,17 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     Export a single JSON bundle for (ip, label, seconds).
     Returns the output file path.
     """
-    RRD_DIR   = settings.get("rrd_directory", "rrd")
-    HTML_DIR = resolve_html_dir(settings) 
-    DATA_DIR = os.path.join(HTML_DIR, "data") 
+    # === Directories (NEW: unified paths) ===
+    paths = resolve_all_paths(settings)
+    RRD_DIR  = paths["rrd"]                               # was: settings.get("rrd_directory", "rrd")
+    HTML_DIR = resolve_html_dir(settings)                 # ensures <paths.html> exists
+    DATA_DIR = os.path.join(HTML_DIR, "data")
     os.makedirs(DATA_DIR, exist_ok=True)
     _ensure_dir(os.path.join(DATA_DIR, "x"))  # ensure folder exists
 
     # Metrics to export (names only; e.g., ["avg", "last", "best", "loss"])
     metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", []) if ds.get("name")]
+
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
 
@@ -95,16 +85,16 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             logger.warning(f"[{ip}] RRD missing, wrote stub: {out_path}")
         return out_path
 
-    # Build legend labels: list of (hop_index:int, "hop: label")
-    hops_legend = get_labels(ip, traceroute_dir=settings.get("traceroute_directory", "traceroute")) or []
-    # If no labels (rare), still try to enumerate hop indices by inspecting DS names after fetch.
+    # Build legend labels from traceroute cache (NEW: unified path)
+    traceroute_dir = paths["traceroute"]                  # was: settings.get("traceroute_directory", "traceroute")
+    hops_legend = get_labels(ip, traceroute_dir=traceroute_dir) or []
 
     # Fetch once for the time grid + all DS columns available in the chosen RRA
     end = int(time.time())
     start = end - int(seconds)
 
     try:
-        # Correct signature: returns ((start, end, step), names, rows)
+        # returns ((start, end, step), names, rows)
         (f_start, f_end, f_step), names, rows = rrdtool.fetch(
             rrd_path, "AVERAGE", "--start", str(start), "--end", str(end)
         )
@@ -122,14 +112,12 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
 
     # Time grid
     step = int(f_step) if f_step else None
-    # rows length may be (f_end - f_start) / step; construct epochs to match rows
-    # Guard against weirdness if step is None/0
     if step and step > 0:
         epochs = list(range(int(f_start), int(f_end), step))
     else:
-        # Fallback: derive length from rows only
         epochs = list(range(len(rows)))
-    # If lengths mismatch, trim to common length
+
+    # Align lengths defensively
     if len(epochs) != len(rows):
         n = min(len(epochs), len(rows))
         epochs = epochs[:n]
@@ -137,14 +125,13 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
 
     labels_hhmm = [_fmt_ts(ts if step else int(time.time())) for ts in epochs]
 
-    # Build a quick index for DS names -> column index
+    # Map DS names to column indices
     name_to_idx = {name: i for i, name in enumerate(names or [])}
 
-    # If we didn't get any legend labels, infer hop indices from DS names (e.g., hop0_avg)
+    # If no labels (rare), infer hop indices from DS names (e.g., hop0_avg)
     if not hops_legend and names:
         seen_hops = set()
         for nm in names:
-            # expect "hopN_metric"
             parts = nm.split("_", 1)
             if len(parts) == 2 and parts[0].startswith("hop"):
                 try:
@@ -161,7 +148,6 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             return [None] * len(rows)
         out_vals = []
         for r in rows:
-            # each row is a tuple aligned with names; r[col] can be None/NaN
             try:
                 val = r[col]
             except Exception:
@@ -169,7 +155,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             out_vals.append(_nan_to_none(val))
         return out_vals
 
-    # Build hop entries with per-metric arrays
+    # Build hop entries with per‑metric arrays
     hop_entries = []
     for hop_index, label_text in hops_legend:
         entry = {
