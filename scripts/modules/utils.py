@@ -89,6 +89,30 @@ def resolve_canvas(settings: dict):
     max_hops = canvas.get("max_hops", settings.get("max_hops", 30))
     return width, height, max_hops
 
+def resolve_html_dir(settings: dict) -> str:
+    """
+    Back-compat shim.
+    Returns absolute HTML root and ensures it exists.
+    New source of truth is settings['paths']['html'] with legacy fallbacks.
+    """
+    from pathlib import Path
+    paths = resolve_all_paths(settings)
+    p = Path(paths["html"]).resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+def resolve_graphs_dir(settings: dict) -> str:
+    """
+    Back-compat shim.
+    Returns absolute graphs dir and ensures it exists.
+    Prefers paths.graphs; falls back to <html>/graphs.
+    """
+    from pathlib import Path
+    paths = resolve_all_paths(settings)
+    p = Path(paths["graphs"]).resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
 # -------------------------------
 # Logging helpers
 # -------------------------------
