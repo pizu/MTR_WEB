@@ -49,12 +49,7 @@ def main() -> int:
         print(f"[FATAL] Failed to load settings '{settings_path}': {e}", file=sys.stderr)
         return 1
 
-    logger = setup_logger(
-        "index_generator",
-        settings.get("log_directory", "/tmp"),
-        "index_generator.log",
-        settings=settings
-    )
+    logger = setup_logger("index_generator", settings=settings)
 
     # 2) Load targets
     targets_file = resolve_targets_path()
