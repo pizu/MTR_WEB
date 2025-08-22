@@ -20,6 +20,8 @@ import sys
 import time
 import argparse
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from modules.utils import load_settings, setup_logger, resolve_all_paths  # add resolve_all_paths
+
 
 # --- Ensure scripts/modules are importable (works from systemd and shell) ---
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -70,12 +72,9 @@ def main() -> int:
         return 1
 
     # 2) Logger (honors logging_levels.graph_generator)
-    logger = setup_logger(
-        "graph_generator",
-        settings.get("log_directory", "/tmp"),
-        "graph_generator.log",
-        settings=settings
-    )
+    paths = resolve_all_paths(settings)
+    logger = setup_logger("graph_generator", settings=settings)
+    
     logger.debug(f"Using settings: {settings_path}")
 
     # 3) Build config + ensure output directory exists
