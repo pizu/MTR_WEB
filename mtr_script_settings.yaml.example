@@ -1,0 +1,180 @@
+# mtr_script_settings.yaml
+#
+# General settings for MTR monitor script
+
+# === Logging ===
+log_directory: /opt/scripts/MTR_WEB/logs/
+
+# === HTML Directory ===
+html_directory: /opt/scripts/MTR_WEB/html/
+
+# Per-script log levels (used by setup_logger)
+logging_levels:
+  controller: ERROR
+  mtr_watchdog: ERROR
+  mtr_monitor: ERROR
+  graph_generator: ERROR
+  timeseries_exporter: ERROR
+  html_generator: ERROR
+  html_builder: ERROR
+  index_generator: ERROR
+  target_html: ERROR
+  rrd: ERROR
+
+# === RRD and Graphing ===
+rrd_directory: /opt/scripts/MTR_WEB/data/
+graph_output_directory: /opt/scripts/MTR_WEB/html/graphs/
+max_hops: 30
+graph_width: 800
+graph_height: 200
+
+# === HOP Labels ===
+labels:
+  # Reset/realign policy for hop label statistics when hop paths change:
+  # none               -> never reset (may mix hosts if hops shift)
+  # from_first_diff    -> reset stats from first hop where path differs (safe default)
+  # realign_then_reset -> try to match hosts to previous hop stats before resetting rest
+  # all                -> reset stats for all hops whenever path changes
+  reset_mode: from_first_diff
+  unstable_threshold: 0.60           # sensitivity for "varies"
+  majority_window: 60                # how fast stats adapt
+  sticky_min_wins: 3                 # hysteresis for modal host flips
+  topk_to_show: 4                    # how many hosts to list inside "varies (...)"
+
+charts:
+  renderer: "chartjs"
+  export_on_change_only: true
+  legend_show: true
+
+calendar:
+  hop_change_events_enabled: false   # set true to start writing JSONL events/intervals
+  ics_export_enabled: false          # reserved for a future exporter
+
+# === Controller Settings (Optional) ===
+controller:
+  # How often the controller scans for changes (settings/targets) and does health checks.
+  # Older key 'scan_interval_seconds' is also accepted as a fallback.
+  loop_seconds: 15
+
+  # How often to run the full reporting pipeline regardless of changes.
+  # Older key 'pipeline_run_every_seconds' is also accepted.
+  pipeline_every_seconds: 120
+
+  # Whether to run the reporting pipeline immediately whenever settings/targets change.
+  # Older key 'pipeline_run_on_change' is also accepted.
+  rerun_pipeline_on_changes: true
+
+
+#step and rows determine how long your data is retained.
+#You can mix different cf functions (e.g. MAX to highlight spikes).
+#When updating this config:
+#It only affects newly created RRDs.
+#Existing .rrd files must be deleted and recreated to apply new RRA settings (or use rrdtool tune but that's more advanced and limited).
+
+rrd:
+  step: 60         # Collect data every 60 seconds
+  heartbeat: 120   # Max time allowed between samples
+
+  data_sources:
+    - { name: avg,  type: GAUGE, min: 0, max: 1000 }   # Average latency in ms
+    - { name: last, type: GAUGE, min: 0, max: 1000 }   # Last recorded latency
+    - { name: best, type: GAUGE, min: 0, max: 1000 }   # Best latency
+    - { name: loss, type: GAUGE, min: 0, max: 100 }    # Packet loss in %
+
+  #RRA Calculation formula: rows = (retention_duration_seconds) / (step * base_step_seconds)
+  #retention_duration_seconds = days in seconds (7 days example: 604800)
+  #step = rras step (5)
+  #base_step_seconds = rrd step (60)
+  #Calc Part 1: 60 * 5 = 300
+  #Calc Part 2: 604800 / 300 = 2016
+  
+  rras:
+    - { cf: AVERAGE, xff: 0.5, step: 1,  rows: 1440 }    # 1-min res, 1 day
+    - { cf: AVERAGE, xff: 0.5, step: 5,  rows: 2016 }    # 5-min res, 7 days
+    - { cf: AVERAGE, xff: 0.5, step: 15, rows: 2880 }    # 15-min res, 30 days
+    - { cf: AVERAGE, xff: 0.5, step: 60, rows: 2160 }    # 1-hour res, 90 days
+    - { cf: MAX,     xff: 0.5, step: 5,  rows: 2016 }    # Spike detection
+    - { cf: MIN,     xff: 0.5, step: 5,  rows: 2016 }    # Drop detection
+
+# === Traceroute ===
+traceroute_directory: /opt/scripts/MTR_WEB/traces/
+
+# === Monitoring ===
+mtr:
+  report_cycles: 1          # how many report snapshots per run
+  packets_per_cycle: 10     # -c <N> per snapshot
+  resolve_dns: false        # -n when false
+  per_packet_interval: 1.0  # -i seconds
+  timeout_seconds: 0        # 0 = auto (cycles*packets*interval * multiplier + margin)
+  # optional fine‑tuning (all optional):
+  timeout_multiplier: 1.0
+  timeout_margin_seconds: 5
+  timeout_floor_seconds: 10
+
+runner:
+  loop_enabled: true      # if true, monitor loops forever with sleep(interval_seconds)
+interval_seconds: 60
+
+# === HTML Settings ===
+html_auto_refresh_seconds: 0
+log_lines_display: 50
+
+# === Graph Generation Settings ===
+graph_generation:
+  executor: process
+  parallelism: auto
+  cpu_affinity: spread
+  use_rrd_lock: true
+  skip_unchanged: true
+  recent_safety_seconds: 120
+  niceness: 5
+
+  # New cadence controls
+  summary_interval_runs: 1   # build summaries every run
+  hop_interval_runs: 5       # build per-hop graphs every 5th run
+
+graph_time_ranges:                         # Time ranges for HTML graph selector
+  - { label: "1h",  seconds: 3600 }
+  - { label: "6h",  seconds: 21600 }
+  - { label: "12h", seconds: 43200 }
+  - { label: "24h", seconds: 86400 }
+  - { label: "2d",  seconds: 172800 }
+  - { label: "1w",  seconds: 604800 }
+  - { label: "2w",  seconds: 1209600 }
+  - { label: "1M",  seconds: 2629746 }
+  - { label: "2M",  seconds: 5259492 }
+  - { label: "6M",  seconds: 15778476 }
+  - { label: "1Y",  seconds: 31556952 }
+
+# === Cleanup Retention ===
+retention:
+  rrd_days: 30
+  logs_days: 60
+  traceroute_days: 45
+  graphs_days: 7
+  html_days: 10
+
+graph_cleanup_safety_seconds: 180
+
+# === Custom Logging Severity Rules - Optional ===
+log_severity_rules:
+  - tag: LOSS_SPIKE
+    level: WARNING
+    match: "loss > 10"
+  - tag: HOP_CHANGED
+    level: INFO
+    match: "hop_changed"
+  - tag: LOSS_RECOVERED
+    level: INFO
+    match: "prev_loss > 0 and loss == 0"
+
+# === FPing Path ===
+fping_path: /usr/sbin/fping
+
+# === Optional FPing in index.html ===
+enable_fping_check: true
+
+# === Alerting (Not yet implemented) ===
+# alert_email_to: "alerts@example.com"
+# loss_threshold: 50
+# debounce_seconds: 300
