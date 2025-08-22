@@ -195,7 +195,7 @@ def update_rrd(rrd_path: str,
                hops: List[Dict[str, Any]],
                ip: str,
                settings: Optional[Dict[str, Any]],
-               debug_log: Any = True,
+               debug_log: bool = False,
                logger: Optional[logging.Logger] = None) -> None:
     """
     Update the single multi-hop RRD (if it exists).
@@ -208,14 +208,12 @@ def update_rrd(rrd_path: str,
         Parsed MTR report. Each hop dict may include keys like:
           'count', 'host', 'Loss%', 'Last', 'Avg', 'Best', ...
     ip        : str
-        Target IP/host (unused here but kept for signature compatibility).
+        Target IP/host (used only for debug messages).
     settings  : dict or None
         YAML settings. If None, defaults are used.
-    debug_log : one of [False, True, <path-to-file>, <path-to-directory>]
-        - False/None : no debug text log
-        - True       : append to <rrd_dir>/rrd_debug.log
-        - str (file) : append to that file path
-        - str (dir)  : append to <dir>/rrd_debug.log
+    debug_log : bool
+        If True, emit per-update value arrays via the injected logger at DEBUG level.
+        (No sidecar files are created; all logging flows through utils.setup_logger.)
     logger    : logging.Logger or None
         Logger to use; defaults to logging.getLogger("rrd")
     """
@@ -237,13 +235,7 @@ def update_rrd(rrd_path: str,
         if n >= 1:
             by_index[n] = h
 
-    # Resolve the debug log path if any
-    if debug_log:
-      logger.debug(f"[{ip}] (multi) values: {values}")
-
-    # ------------------------------
     # Update the (single) multi-hop RRD if it exists
-    # ------------------------------
     if rrd_path and os.path.exists(rrd_path):
         values: List[str] = []
         # The order of values must match how the DS were created in init_rrd()
@@ -265,4 +257,4 @@ def update_rrd(rrd_path: str,
             logger.error(f"[RRD ERROR] multi-hop update unexpected error for {rrd_path}: {e}")
 
         if debug_log:
-          logger.debug(f"[{ip}] (multi) values: {values}")
+            logger.debug(f"[{ip}] (multi) values: {values}")
