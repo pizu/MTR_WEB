@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 # modules/index_writer.py
 #
-# This version removes the Hop0 and Total columns from the index page.
-# It keeps the columns: IP, Description, Status, Last Seen.
-#
-# It also avoids calling get_rrd_metrics() for the index for speed/clarity.
+# Columns: IP | Description | Status | Last Seen
+# Uses new structured config:
+#   - paths.logs, paths.fping
+#   - index_page.enable_fping_check (fallback enable_fping_check)
+#   - html.auto_refresh_seconds
 
 import os
 from datetime import datetime
 from modules.fping_status import get_fping_status
-from modules.utils import resolve_html_dir
+from modules.utils import resolve_html_dir, resolve_all_paths
 
 def generate_index_page(targets, settings, logger):
-    """
-    Builds the index.html page from the list of targets and settings.
-    Columns: IP | Description | Status | Last Seen
-    """
     HTML_DIR = resolve_html_dir(settings)
-    LOG_DIR         = settings.get("log_directory", "logs")
-    ENABLE_FPING    = settings.get("enable_fping_check", True)
-    FPING_PATH      = settings.get("fping_path", None)
-    REFRESH_SECONDS = settings.get("html_auto_refresh_seconds", 0)
+    paths    = resolve_all_paths(settings)
+
+    LOG_DIR         = paths["logs"]                               # was settings.get("log_directory", "logs")
+    FPING_PATH      = paths.get("fping")                          # was settings.get("fping_path")
+    ENABLE_FPING    = settings.get("index_page", {}).get("enable_fping_check",
+                        settings.get("enable_fping_check", True)) # fallback preserved
+    REFRESH_SECONDS = settings.get("html", {}).get("auto_refresh_seconds",
+                        settings.get("html_auto_refresh_seconds", 0))
 
     index_path = os.path.join(HTML_DIR, "index.html")
     os.makedirs(HTML_DIR, exist_ok=True)
@@ -49,7 +50,9 @@ def generate_index_page(targets, settings, logger):
 """)
 
             for target in targets:
-                ip   = target["ip"]
+                ip   = target.get("ip", "")
+                if not ip:
+                    continue
                 desc = target.get("description", "")
                 log_path = os.path.join(LOG_DIR, f"{ip}.log")
 
@@ -57,14 +60,25 @@ def generate_index_page(targets, settings, logger):
                 last_seen = "Never"
                 if os.path.exists(log_path):
                     try:
+                        # pick last line that contains "MTR RUN" or fallback to file mtime
+                        last_line = None
                         with open(log_path, encoding="utf-8") as lf:
-                            lines = [l for l in lf if "MTR RUN" in l]
-                            if lines:
-                                last_seen = lines[-1].split("]")[0].strip("[")
+                            for line in lf:
+                                if "MTR RUN" in line:
+                                    last_line = line
+                        if last_line:
+                            last_seen = last_line.split("]")[0].strip("[")
+                        else:
+                            last_seen = datetime.fromtimestamp(os.path.getmtime(log_path)).strftime("%Y-%m-%d %H:%M:%S")
                     except Exception as e:
                         logger.warning(f"Failed reading last_seen from {log_path}: {e}")
 
-                status = get_fping_status(ip, FPING_PATH) if ENABLE_FPING else "Unknown"
+                status = "Unknown"
+                if ENABLE_FPING:
+                    try:
+                        status = get_fping_status(ip, FPING_PATH)
+                    except Exception as e:
+                        logger.warning(f"fping status failed for {ip}: {e}")
 
                 f.write(
                     f"<tr>"
