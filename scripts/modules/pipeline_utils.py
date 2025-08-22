@@ -35,15 +35,17 @@ class PipelineRunner:
         self.settings_file = settings_file
         self.logger        = logger
         self.python        = sys.executable or "/usr/bin/python3"
-        # Put pipeline logs under the main logs dir if configured; else ./logs
-        # We don’t import utils here to keep this module minimal.
+
+        # Determine the base logs dir from settings, else default to <repo>/logs
         try:
             cfg = load_settings(self.settings_file)
             default_logs = cfg.get("log_directory", os.path.join(self.repo_root, "logs"))
         except Exception:
             default_logs = os.path.join(self.repo_root, "logs")
-            _ensure_dir(default_logs)
-            self.pipeline_log_dir = os.environ.get("PIPELINE_LOG_DIR", default_logs)
+
+        # Allow override via env; ALWAYS set the attribute and ensure the dir exists
+        self.pipeline_log_dir = os.environ.get("PIPELINE_LOG_DIR", default_logs)
+        _ensure_dir(self.pipeline_log_dir)
 
     def _step_log_path(self, script_basename: str) -> str:
         return os.path.join(self.pipeline_log_dir, f"pipeline_{script_basename}.log")
