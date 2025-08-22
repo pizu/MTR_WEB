@@ -2,18 +2,14 @@
 """
 modules/rrd_exporter.py
 
-Exports interactive‑friendly JSON time series for a target IP and a given time range label.
+Exports Chart.js‑friendly JSON time series for a target IP and a given time range label.
 Output path: <paths.html>/data/<ip>_<label>.json
 
-Reads paths from settings['paths'] (with legacy fallbacks handled by utils):
-- RRDs:       resolve_all_paths(settings)['rrd']
-- HTML root:  resolve_html_dir(settings)  -> ensures exists
-- Traceroute: resolve_all_paths(settings)['traceroute']
-
-Notes for beginners:
-- If an RRD does not exist yet (monitor hasn’t written any samples), we write a small "stub"
-  JSON so the UI can still load without errors. Once the RRD is created, subsequent runs
-  will produce real data.
+Updates in this version:
+- Unified paths (RRD/HTML/Traceroute) via modules.utils.
+- Derives DS names from settings['rrd']['data_sources'].
+- **Maps DS name 'stdev' → JSON key 'varies'** so front-end shows “Varies (ms)”.
+- If a DS is missing in the RRD (e.g., old schema), exporter emits an aligned array of nulls.
 """
 
 import os
@@ -24,7 +20,13 @@ import rrdtool
 from datetime import datetime
 
 from modules.graph_utils import get_labels
-from modules.utils import resolve_html_dir, resolve_all_paths  # <- NEW
+from modules.utils import resolve_html_dir, resolve_all_paths
+
+# Alias map: RRD DS name -> JSON key
+# This lets us present friendlier names without changing RRD DS schema.
+JSON_KEY_ALIAS = {
+    "stdev": "varies",   # show as "varies" in JSON/UI
+}
 
 def _color(hop_index: int) -> str:
     """Deterministic color per hop (matches graph_workers)."""
@@ -59,16 +61,18 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     Export a single JSON bundle for (ip, label, seconds).
     Returns the output file path.
     """
-    # === Directories (NEW: unified paths) ===
+    # === Directories (unified paths) ===
     paths = resolve_all_paths(settings)
-    RRD_DIR  = paths["rrd"]                               # was: settings.get("rrd_directory", "rrd")
-    HTML_DIR = resolve_html_dir(settings)                 # ensures <paths.html> exists
+    RRD_DIR  = paths["rrd"]
+    HTML_DIR = resolve_html_dir(settings)  # ensures <paths.html> exists
     DATA_DIR = os.path.join(HTML_DIR, "data")
     os.makedirs(DATA_DIR, exist_ok=True)
     _ensure_dir(os.path.join(DATA_DIR, "x"))  # ensure folder exists
 
-    # Metrics to export (names only; e.g., ["avg", "last", "best", "loss"])
-    metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", []) if ds.get("name")]
+    # Metrics to export (names from schema, e.g., ["avg", "last", "best", "loss", "stdev"])
+    schema_metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", []) if ds.get("name")]
+    # JSON keys we will actually emit (with aliasing)
+    json_metrics = [JSON_KEY_ALIAS.get(m, m) for m in schema_metrics]
 
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
@@ -85,8 +89,8 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             logger.warning(f"[{ip}] RRD missing, wrote stub: {out_path}")
         return out_path
 
-    # Build legend labels from traceroute cache (NEW: unified path)
-    traceroute_dir = paths["traceroute"]                  # was: settings.get("traceroute_directory", "traceroute")
+    # Build legend labels from traceroute cache (unified path)
+    traceroute_dir = paths["traceroute"]
     hops_legend = get_labels(ip, traceroute_dir=traceroute_dir) or []
 
     # Fetch once for the time grid + all DS columns available in the chosen RRA
@@ -128,7 +132,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     # Map DS names to column indices
     name_to_idx = {name: i for i, name in enumerate(names or [])}
 
-    # If no labels (rare), infer hop indices from DS names (e.g., hop0_avg)
+    # If no traceroute labels (rare), infer hop indices from DS names (e.g., hop1_avg)
     if not hops_legend and names:
         seen_hops = set()
         for nm in names:
@@ -145,6 +149,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     def extract_series(ds_name: str):
         col = name_to_idx.get(ds_name, None)
         if col is None:
+            # DS missing in this RRD (e.g., old schema) → produce aligned nulls
             return [None] * len(rows)
         out_vals = []
         for r in rows:
@@ -164,9 +169,9 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             "color": _color(int(hop_index)),
             "metrics": {}
         }
-        for m in metrics:
-            ds = f"hop{hop_index}_{m}"
-            entry["metrics"][m] = extract_series(ds)
+        for m_schema, m_json in zip(schema_metrics, json_metrics):
+            ds = f"hop{hop_index}_{m_schema}"
+            entry["metrics"][m_json] = extract_series(ds)
         hop_entries.append(entry)
 
     out = {
