@@ -106,7 +106,7 @@ def _create_rrd(path: str, settings: Optional[Dict[str, Any]], ds_schema: List[D
     """
     Create an RRD file with the given DS schema and RRAs. Idempotent.
     """
-    lg = _get_logger(logger)
+    logger = _get_logger(logger)
     if os.path.exists(path):
         return
 
@@ -136,9 +136,9 @@ def _create_rrd(path: str, settings: Optional[Dict[str, Any]], ds_schema: List[D
             *ds_lines,
             *rras
         )
-        lg.info(f"[RRD] created {path} (step={step}, heartbeat={heartbeat})")
+        logger.info(f"[RRD] created {path} (step={step}, heartbeat={heartbeat})")
     except Exception as e:
-        lg.error(f"[RRD] create failed for {path}: {e}")
+        logger.error(f"[RRD] create failed for {path}: {e}")
 
 
 def _float_or_U(v: Any) -> str:
@@ -163,7 +163,7 @@ def init_rrd(rrd_path: str, settings: Dict[str, Any], logger: Optional[logging.L
 
     NOTE: Hop indices start at 1; there is no hop0.
     """
-    lg = _get_logger(logger)
+    logger = _get_logger(logger)
     if os.path.exists(rrd_path):
         return
 
@@ -186,9 +186,9 @@ def init_rrd(rrd_path: str, settings: Dict[str, Any], logger: Optional[logging.L
     _ensure_dir(os.path.dirname(rrd_path))
     try:
         rrdtool.create(rrd_path, "--step", str(step), *ds_lines, *rras)
-        lg.info(f"[RRD] created (multi) {rrd_path} with hop1..hop{max_hops}")
+        logger.info(f"[RRD] created (multi) {rrd_path} with hop1..hop{max_hops}")
     except Exception as e:
-        lg.error(f"[RRD] create failed for (multi) {rrd_path}: {e}")
+        logger.error(f"[RRD] create failed for (multi) {rrd_path}: {e}")
 
 
 def update_rrd(rrd_path: str,
@@ -219,7 +219,7 @@ def update_rrd(rrd_path: str,
     logger    : logging.Logger or None
         Logger to use; defaults to logging.getLogger("rrd")
     """
-    lg = _get_logger(logger)
+    logger = _get_logger(logger)
     cfg       = _rrd_cfg(settings)
     ds_schema = cfg.get("data_sources", []) or []
     rrd_dir   = _rrd_dir(settings)
@@ -267,13 +267,9 @@ def update_rrd(rrd_path: str,
         try:
             rrdtool.update(rrd_path, update_str)
         except rrdtool.OperationalError as e:
-            lg.error(f"[RRD ERROR] multi-hop update failed for {rrd_path}: {e}")
+            logger.error(f"[RRD ERROR] multi-hop update failed for {rrd_path}: {e}")
         except Exception as e:
-            lg.error(f"[RRD ERROR] multi-hop update unexpected error for {rrd_path}: {e}")
+            logger.error(f"[RRD ERROR] multi-hop update unexpected error for {rrd_path}: {e}")
 
-        if debug_path:
-            try:
-                with open(debug_path, "a", encoding="utf-8") as f:
-                    f.write(f"{datetime.now()} {ip} (multi) values: {values}\n")
-            except Exception:
-                pass  # debug logging must never break data path
+        if debug_log:
+          logger.debug(f"[{ip}] (multi) values: {values}")
