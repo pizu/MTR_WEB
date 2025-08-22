@@ -87,7 +87,7 @@ def main() -> int:
             traceroute_dir=settings.get("traceroute_directory", "traceroute"),
         )
         try:
-            generate_target_html(ip, description, hops, settings)
+            generate_target_html(ip, description, hops, settings, logger)
         except Exception:
             logger.exception(f"Failed generating HTML for {ip}")
 
