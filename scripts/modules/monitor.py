@@ -274,14 +274,15 @@ def monitor_target(ip, source_ip, settings, logger):
 
     # --- Initial settings consumption ---
     rrd_dir        = settings.get("rrd_directory", "data")
-    log_directory  = settings.get("log_directory", "/tmp")
     interval       = int(settings.get("interval_seconds", 60))
     severity_rules = settings.get("log_severity_rules", [])
 
     # Single multi-hop RRD path
     os.makedirs(rrd_dir, exist_ok=True)
     rrd_path      = os.path.join(rrd_dir, f"{ip}.rrd")
-    debug_rrd_log = os.path.join(log_directory, "rrd_debug.log")
+
+    # Debugging
+    debug_rrd_log = bool(settings.get("rrd", {}).get("debug_values", False))
 
     # Ensure the multi-hop RRD exists (per-hop creation removed)
     init_rrd(rrd_path, settings, logger)
