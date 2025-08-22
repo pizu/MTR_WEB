@@ -1,0 +1,201 @@
+# mtr_script_settings.yaml
+#
+# Unified, self-documented settings file for MTR_WEB.
+# Key goals:
+#   - All filesystem locations grouped under `paths:`
+#   - All per-script log filenames grouped under `logging.files:`
+#   - Backward compatibility shims retained in code (see notes below)
+
+# =========================
+# Filesystem Paths (Unified)
+# =========================
+paths:
+  # Root folders
+  logs:        /opt/scripts/MTR_WEB/logs/              # replaces: log_directory
+  html:        /opt/scripts/MTR_WEB/html/              # replaces: html_directory
+  graphs:      /opt/scripts/MTR_WEB/html/graphs/       # replaces: graph_output_directory
+  rrd:         /opt/scripts/MTR_WEB/data/              # replaces: rrd_directory
+  traceroute:  /opt/scripts/MTR_WEB/traces/            # replaces: traceroute_directory
+
+  # Binaries or external tools (keep under paths for clarity)
+  fping:       /usr/sbin/fping                         # replaces: fping_path
+
+# ==============================
+# Logging (Levels + File Mapping)
+# ==============================
+logging:
+  # Per-script log levels (unchanged keys; you already use these in setup_logger)
+  levels:
+    controller:        ERROR
+    mtr_watchdog:      ERROR
+    mtr_monitor:       ERROR
+    graph_generator:   ERROR
+    timeseries_exporter: ERROR
+    html_generator:    ERROR
+    html_builder:      ERROR
+    index_generator:   ERROR
+    target_html:       ERROR
+    rrd:               ERROR
+
+  # Per-script log file names (new, explicit mapping).
+  # If a file name is omitted, code will fall back to "<script>.log" under paths.logs.
+  files:
+    controller:        controller.log
+    mtr_watchdog:      mtr_watchdog.log
+    mtr_monitor:       mtr_monitor.log
+    graph_generator:   pipeline_graph_generator.py.log
+    timeseries_exporter: timeseries_exporter.log
+    html_generator:    html_generator.log
+    html_builder:      html_builder.log
+    index_generator:   index_generator.log
+    target_html:       target_html.log
+    rrd:               rrd.log
+
+# ==================
+# RRD and Graphing
+# ==================
+rrd:
+  step: 60                   # Collect data every 60 seconds
+  heartbeat: 120             # Max seconds allowed between samples
+  debug_values: false
+
+  data_sources:              # Data sources stored in each RRD
+    - { name: avg,  type: GAUGE, min: 0, max: 1000 }   # Average latency (ms)
+    - { name: last, type: GAUGE, min: 0, max: 1000 }   # Last recorded latency (ms)
+    - { name: best, type: GAUGE, min: 0, max: 1000 }   # Best latency (ms)
+    - { name: loss, type: GAUGE, min: 0, max: 100 }    # Packet loss (%)
+
+  # RRA sizing guidance:
+  # rows = retention_seconds / (rra_step * base_step_seconds)
+  # base_step_seconds = rrd.step (above)
+  rras:
+    - { cf: AVERAGE, xff: 0.5, step: 1,  rows: 1440 }     # 1-min res, ~1 day
+    - { cf: AVERAGE, xff: 0.5, step: 5,  rows: 2016 }     # 5-min res, ~7 days
+    - { cf: AVERAGE, xff: 0.5, step: 15, rows: 2880 }     # 15‑min res, ~30 days
+    - { cf: AVERAGE, xff: 0.5, step: 60, rows: 2160 }     # 1‑hour res, ~90 days
+    - { cf: MAX,     xff: 0.5, step: 5,  rows: 2016 }     # Spike detection
+    - { cf: MIN,     xff: 0.5, step: 5,  rows: 2016 }     # Drop detection
+
+# Graph canvas size (used by RRD graphing)
+graph_canvas:
+  width: 800
+  height: 200
+  max_hops: 30
+
+# ===========
+# Hop Labels
+# ===========
+labels:
+  # Reset/realign policy for hop label statistics when hop paths change:
+  #   none | from_first_diff | realign_then_reset | all
+  reset_mode: from_first_diff
+  unstable_threshold: 0.60
+  majority_window: 60
+  sticky_min_wins: 3
+  topk_to_show: 4
+
+# =========
+# Charts UI
+# =========
+charts:
+  renderer: chartjs
+  export_on_change_only: true
+  legend_show: true
+
+# =========
+# Calendar
+# =========
+calendar:
+  hop_change_events_enabled: false
+  ics_export_enabled: false
+
+# =====================
+# Controller Orchestration
+# =====================
+controller:
+  loop_seconds: 15
+  pipeline_every_seconds: 120
+  rerun_pipeline_on_changes: true
+
+# ==============
+# Monitoring/MTR
+# ==============
+mtr:
+  report_cycles: 1
+  packets_per_cycle: 10
+  resolve_dns: false
+  per_packet_interval: 1.0
+  timeout_seconds: 0
+  timeout_multiplier: 1.0
+  timeout_margin_seconds: 5
+  timeout_floor_seconds: 10
+
+runner:
+  loop_enabled: true
+
+interval_seconds: 60          # global cycle interval used by runner loop
+
+# ============
+# HTML Output
+# ============
+html:
+  auto_refresh_seconds: 0      # replaces: html_auto_refresh_seconds
+  log_lines_display: 50        # replaces: log_lines_display
+  time_ranges:                 # replaces: graph_time_ranges
+    - { label: "1h",  seconds: 3600 }
+    - { label: "6h",  seconds: 21600 }
+    - { label: "12h", seconds: 43200 }
+    - { label: "24h", seconds: 86400 }
+    - { label: "2d",  seconds: 172800 }
+    - { label: "1w",  seconds: 604800 }
+    - { label: "2w",  seconds: 1209600 }
+    - { label: "1M",  seconds: 2629746 }
+    - { label: "2M",  seconds: 5259492 }
+    - { label: "6M",  seconds: 15778476 }
+    - { label: "1Y",  seconds: 31556952 }
+
+# ==========================
+# Graph Generation Scheduler
+# ==========================
+graph_generation:
+  executor: process
+  parallelism: auto
+  cpu_affinity: spread
+  use_rrd_lock: true
+  skip_unchanged: true
+  recent_safety_seconds: 120
+  niceness: 5
+  summary_interval_runs: 1     # build summaries every run
+  hop_interval_runs: 5         # build per-hop graphs every 5th run
+
+# =================
+# Cleanup/Retention
+# =================
+retention:
+  rrd_days: 30
+  logs_days: 60
+  traceroute_days: 45
+  graphs_days: 7
+  html_days: 10
+
+graph_cleanup_safety_seconds: 180
+
+# ==============================
+# Custom Logging Severity Rules
+# ==============================
+log_severity_rules:
+  - tag: LOSS_SPIKE
+    level: WARNING
+    match: "loss > 10"
+  - tag: HOP_CHANGED
+    level: INFO
+    match: "hop_changed"
+  - tag: LOSS_RECOVERED
+    level: INFO
+    match: "prev_loss > 0 and loss == 0"
+
+# ===============
+# Optional Checks
+# ===============
+index_page:
+  enable_fping_check: true     # replaces: enable_fping_check
