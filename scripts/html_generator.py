@@ -15,6 +15,7 @@ import os
 import sys
 import argparse
 import yaml
+from modules.utils import load_settings, setup_logger, resolve_all_paths, resolve_targets_path, get_path  # add resolve_all_paths, get_path
 
 # Ensure imports work under systemd
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -52,12 +53,8 @@ def main() -> int:
         print(f"[FATAL] Failed to load settings '{settings_path}': {e}", file=sys.stderr)
         return 1
 
-    logger = setup_logger(
-        "html_generator",
-        settings.get("log_directory", "/tmp"),
-        "html_generator.log",
-        settings=settings
-    )
+    paths = resolve_all_paths(settings)
+    logger = setup_logger("html_generator", settings=settings)
 
     HTML_DIR = resolve_html_dir(settings)
 
@@ -81,10 +78,11 @@ def main() -> int:
         description = t.get("description", "")
 
         # Prefer traceroute-based labels; get_available_hops handles fallbacks.
+        paths = resolve_all_paths(settings)
         hops = get_available_hops(
             ip,
             graph_dir=os.path.join(HTML_DIR, "graphs"),
-            traceroute_dir=settings.get("traceroute_directory", "traceroute"),
+            traceroute_dir=paths["traceroute"],
         )
         try:
             generate_target_html(ip, description, hops, settings, logger)
