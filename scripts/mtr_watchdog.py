@@ -27,9 +27,10 @@ Exit codes:
   2 = monitor crashed with an unexpected exception (controller may restart it)
 
 YAML reminder:
-Ensure `logging_levels.mtr_watchdog` exists, e.g.:
-  logging_levels:
-    mtr_watchdog: ERROR
+Ensure a level exists for this logger, e.g.:
+  logging:
+    levels:
+      mtr_watchdog: ERROR
 """
 
 import os
@@ -58,10 +59,7 @@ except Exception as e:
 
 
 def _candidates() -> List[Tuple[str, str]]:
-    """
-    Ordered list of (module_path, attr_name) to try for the monitor entrypoint.
-    You can add more if your layout changes.
-    """
+    """Ordered list of (module_path, attr_name) to try for the monitor entrypoint."""
     return [
         ("modules.monitor", "monitor_target"),
         ("modules.mtr_monitor", "monitor_target"),
@@ -74,10 +72,8 @@ def _candidates() -> List[Tuple[str, str]]:
 def _import_monitor_target() -> Tuple[Callable[..., Any], str]:
     """
     Try importing monitor_target from various modules.
-    Returns:
-        (callable, "module_path.attr")
-    Raises:
-        ImportError with a combined message if none match.
+    Returns: (callable, "module_path.attr")
+    Raises: ImportError with a combined message if none match.
     """
     errors = []
     for mod_path, attr in _candidates():
@@ -117,7 +113,7 @@ def _call_monitor_compat(func: Callable[..., Any],
                          logger: logging.Logger) -> None:
     """
     Call the discovered monitor function with only the kwargs it accepts.
-    Supported keywords: ip, source_ip, settings, logger
+    Supported keywords: ip, target, source_ip, source, settings, logger
     """
     sig = inspect.signature(func)
     supported = set(sig.parameters.keys())
@@ -142,15 +138,15 @@ def main() -> int:
         print(f"[FATAL] Failed to load settings '{args.settings}': {e}", file=sys.stderr)
         return 1
 
-    # 3) Initialize logging (create first; you can refresh later if you add hot-reload)
+    # 3) Initialize logging using new signature (dir & filename resolved from YAML)
+    #    - Directory:   paths.logs (or legacy log_directory)
+    #    - File name:   logging.files.mtr_watchdog (fallback "mtr_watchdog.log")
+    #    - Extra file:  one per target (e.g., "8.8.8.8.log") alongside the main watchdog log
     try:
-        log_dir = settings.get("log_directory", "/tmp")
         logger = setup_logger(
             "mtr_watchdog",
-            log_dir,
-            "mtr_watchdog.log",
             settings=settings,
-            extra_file=f"{args.target}.log",   # per-target logfile: e.g., logs/8.8.8.8.log
+            extra_file=f"{args.target}.log"
         )
     except Exception as e:
         print(f"[FATAL] Failed to initialize logging: {e}", file=sys.stderr)
