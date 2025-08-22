@@ -74,6 +74,7 @@ controller:
 rrd:
   step: 60         # Collect data every 60 seconds
   heartbeat: 120   # Max time allowed between samples
+  debug_values: false
 
   data_sources:
     - { name: avg,  type: GAUGE, min: 0, max: 1000 }   # Average latency in ms
