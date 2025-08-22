@@ -4,38 +4,8 @@ rrd_handler.py
 ---------------
 RRD helper functions for the MTR monitoring pipeline.
 
-Overview
---------
-This module now uses a **single, multi-hop RRD per target** and writes all hop
-data into that one file using multiple DS entries (hop1_avg, hop1_last, ...).
-**Per-hop RRD files have been removed** to reduce disk I/O and file churn.
-
-Where settings come from (YAML)
--------------------------------
-settings['rrd_directory']   -> base directory for RRDs (defaults to "data")
-settings['max_hops']        -> number of hop slots to provision in the multi-hop file (default 30)
-settings['rrd']             -> dict with:
-  step        : int    (e.g., 60)
-  heartbeat   : int    (e.g., 120)
-  data_sources: list of { name, type, min, max }        # e.g. avg,last,best,loss
-  rras        : list of { cf, xff, step, rows }
-
-Typical DS schema in YAML:
-  rrd:
-    data_sources:
-      - { name: "avg",  type: "GAUGE", min: 0,  max: "U" }
-      - { name: "last", type: "GAUGE", min: 0,  max: "U" }
-      - { name: "best", type: "GAUGE", min: 0,  max: "U" }
-      - { name: "loss", type: "GAUGE", min: 0,  max: 100 }
-
-Logging
--------
-Uses the provided logger or falls back to logging.getLogger("rrd").
-No prints; errors are logged.
-
-Python compatibility
---------------------
-Python 3.7+.
+This version uses unified paths via utils.resolve_all_paths(settings) so RRDs
+are always read/written under settings['paths']['rrd'] (with legacy fallbacks).
 """
 
 import os
@@ -44,11 +14,12 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from modules.utils import resolve_all_paths  # <- NEW
+
 try:
     import rrdtool  # type: ignore
 except Exception as e:
     raise RuntimeError(f"rrdtool module is required: {e}")
-
 
 # ---------------------------------------------------------------------
 # Internal utilities
@@ -58,21 +29,28 @@ def _get_logger(logger: Optional[logging.Logger]) -> logging.Logger:
     """Return provided logger or a shared 'rrd' logger."""
     return logger if logger is not None else logging.getLogger("rrd")
 
-
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
-
 
 def _rrd_cfg(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Return the settings['rrd'] subdict or {}."""
     return (settings or {}).get("rrd", {}) or {}
 
-
 def _rrd_dir(settings: Optional[Dict[str, Any]]) -> str:
-    """Return the target directory for RRD files (default: 'data')."""
+    """
+    Return the target directory for RRD files.
+    NEW: prefer settings['paths']['rrd'] via resolve_all_paths(); fallback to legacy key.
+    """
+    try:
+        paths = resolve_all_paths(settings or {})
+        base = paths.get("rrd")
+        if base:
+            return base
+    except Exception:
+        pass
+    # Legacy fallback (kept for backwards compatibility)
     base = (settings or {}).get("rrd_directory")
     return base if base else "data"
-
 
 def _rras_from_settings(settings: Optional[Dict[str, Any]]) -> List[str]:
     """
@@ -90,66 +68,22 @@ def _rras_from_settings(settings: Optional[Dict[str, Any]]) -> List[str]:
                 rows = int(r.get("rows", 4320))
                 rras.append(f"RRA:{cf}:{xff}:{step}:{rows}")
             except Exception:
-                # Skip malformed entries silently
                 continue
     else:
-        # Sane defaults if none are configured
+        # Sane defaults if none configured
         rras.extend([
-            "RRA:AVERAGE:0.5:1:4320",   # ~3 days at 'step'
-            "RRA:AVERAGE:0.5:5:4032",  # ~2 weeks at 5*step
+            "RRA:AVERAGE:0.5:1:4320",     # ~3 days at 'step'
+            "RRA:AVERAGE:0.5:5:4032",    # ~2 weeks at 5*step
             "RRA:MAX:0.5:5:4032",
         ])
     return rras
 
-
-def _create_rrd(path: str, settings: Optional[Dict[str, Any]], ds_schema: List[Dict[str, Any]], logger: Optional[logging.Logger]) -> None:
-    """
-    Create an RRD file with the given DS schema and RRAs. Idempotent.
-    """
-    logger = _get_logger(logger)
-    if os.path.exists(path):
-        return
-
-    cfg       = _rrd_cfg(settings)
-    step      = int(cfg.get("step", 60))
-    heartbeat = int(cfg.get("heartbeat", step * 2))
-
-    _ensure_dir(os.path.dirname(path))
-
-    # Build DS lines (accept 'U' for unknown bounds as strings)
-    ds_lines: List[str] = []
-    for ds in (ds_schema or []):
-        name = str(ds.get("name", "")).strip()
-        dtype = str(ds.get("type", "GAUGE")).strip()
-        dmin = ds.get("min", "U")
-        dmax = ds.get("max", "U")
-        if not name:
-            continue
-        ds_lines.append(f"DS:{name}:{dtype}:{heartbeat}:{dmin}:{dmax}")
-
-    rras = _rras_from_settings(settings)
-
-    try:
-        rrdtool.create(
-            path,
-            "--step", str(step),
-            *ds_lines,
-            *rras
-        )
-        logger.info(f"[RRD] created {path} (step={step}, heartbeat={heartbeat})")
-    except Exception as e:
-        logger.error(f"[RRD] create failed for {path}: {e}")
-
-
 def _float_or_U(v: Any) -> str:
-    """
-    Convert a value to a stringed float rounded to 2 decimals, else 'U'.
-    """
+    """Convert value to a rounded string or 'U' if not a number."""
     try:
         return str(round(float(v), 2))
     except Exception:
         return "U"
-
 
 # ---------------------------------------------------------------------
 # Public API (single multi-hop file; per-hop files removed)
@@ -158,8 +92,8 @@ def _float_or_U(v: Any) -> str:
 def init_rrd(rrd_path: str, settings: Dict[str, Any], logger: Optional[logging.Logger]) -> None:
     """
     Create ONE multi-hop RRD for a target.
-    DS names are constructed as hop{N}_{ds_name} for N=1..max_hops, using the
-    DS list found in settings['rrd']['data_sources'].
+    DS names are constructed as hop{N}_{ds_name} for N=1..max_hops using the DS list in
+    settings['rrd']['data_sources'].
 
     NOTE: Hop indices start at 1; there is no hop0.
     """
@@ -190,7 +124,6 @@ def init_rrd(rrd_path: str, settings: Dict[str, Any], logger: Optional[logging.L
     except Exception as e:
         logger.error(f"[RRD] create failed for (multi) {rrd_path}: {e}")
 
-
 def update_rrd(rrd_path: str,
                hops: List[Dict[str, Any]],
                ip: str,
@@ -200,32 +133,19 @@ def update_rrd(rrd_path: str,
     """
     Update the single multi-hop RRD (if it exists).
 
-    Parameters
-    ----------
-    rrd_path  : str
-        Path to the *single* (multi-hop) RRD file. If it does not exist, we skip it.
-    hops      : list of dicts
-        Parsed MTR report. Each hop dict may include keys like:
-          'count', 'host', 'Loss%', 'Last', 'Avg', 'Best', ...
-    ip        : str
-        Target IP/host (used only for debug messages).
-    settings  : dict or None
-        YAML settings. If None, defaults are used.
-    debug_log : bool
-        If True, emit per-update value arrays via the injected logger at DEBUG level.
-        (No sidecar files are created; all logging flows through utils.setup_logger.)
-    logger    : logging.Logger or None
-        Logger to use; defaults to logging.getLogger("rrd")
+    hops: list of dicts with MTR metrics:
+      h['count'] -> hop index (1..N)
+      h['Avg'], h['Last'], h['Best'], h['Loss%'] -> numeric values
     """
     logger = _get_logger(logger)
     cfg       = _rrd_cfg(settings)
     ds_schema = cfg.get("data_sources", []) or []
-    rrd_dir   = _rrd_dir(settings)
+    rrd_dir   = _rrd_dir(settings)  # <- now from paths.rrd
     max_hops  = int((settings or {}).get("max_hops", 30))
 
     _ensure_dir(rrd_dir)
 
-    # Build a quick lookup: hop index -> hop dict (ignore hop0 if seen)
+    # Index hops by 'count' (ignore hop0)
     by_index: Dict[int, Dict[str, Any]] = {}
     for h in (hops or []):
         try:
@@ -238,7 +158,7 @@ def update_rrd(rrd_path: str,
     # Update the (single) multi-hop RRD if it exists
     if rrd_path and os.path.exists(rrd_path):
         values: List[str] = []
-        # The order of values must match how the DS were created in init_rrd()
+        # The order of values must match DS creation in init_rrd()
         for i in range(1, max_hops + 1):
             hop = by_index.get(i, {})
             avg  = _float_or_U(hop.get("Avg"))
