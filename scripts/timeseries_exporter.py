@@ -19,6 +19,7 @@ import os
 import sys
 import argparse
 import yaml
+from modules.utils import load_settings, setup_logger, resolve_targets_path, get_html_ranges  # add get_html_ranges
 
 # --- make scripts/modules importable (works via systemd and shell) ---
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -28,7 +29,6 @@ for p in (MODULES_DIR, SCRIPTS_DIR, REPO_ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from modules.utils import load_settings, setup_logger, resolve_targets_path  # noqa: E402
 from modules.rrd_exporter import export_ip_timerange_json                   # noqa: E402
 
 
@@ -59,12 +59,7 @@ def main() -> int:
         print(f"[FATAL] Failed to load settings '{settings_path}': {e}", file=sys.stderr)
         return 1
 
-    logger = setup_logger(
-        "timeseries_exporter",
-        settings.get("log_directory", "/tmp"),
-        "timeseries_exporter.log",
-        settings=settings
-    )
+    logger = setup_logger("timeseries_exporter", settings=settings)
 
     # 2) Load targets (repo root)
     targets_file = resolve_targets_path()
@@ -78,7 +73,8 @@ def main() -> int:
         return 1
 
     # 3) Time ranges
-    ranges = [r for r in (settings.get("graph_time_ranges") or []) if r.get("label") and r.get("seconds")]
+    ranges = [r for r in (get_html_ranges(settings) or []) if r.get("label") and r.get("seconds")]
+
     if not ranges:
         logger.warning("No graph_time_ranges in settings; nothing to export.")
         return 0
