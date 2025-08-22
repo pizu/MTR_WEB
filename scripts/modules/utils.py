@@ -2,29 +2,10 @@
 """
 utils.py - Shared utility functions for the MTR monitoring system.
 
-This module provides:
-- load_settings(): Load settings from mtr_script_settings.yaml
-- setup_logger(): Standardized logger initialization for scripts
-- refresh_logger_levels(): Re-apply levels to an existing logger + handlers
-
-Expected keys in mtr_script_settings.yaml:
-
-log_directory: "/opt/scripts/MTR_WEB/logs/"
-interval_seconds: 60
-loss_threshold: 10
-debounce_seconds: 300
-retention_days: 30
-log_lines_display: 100
-
-logging_levels:
-  controller: INFO
-  mtr_monitor: DEBUG
-  graph_generator: WARNING
-  html_generator: INFO
-  index_generator: INFO
-
-# Optional:
-enable_console_logging: false   # default false; set true for foreground runs
+Enhancements:
+- Centralized handling of all filesystem paths via settings['paths'] (with legacy fallback).
+- Unified logging configuration: levels under logging.levels, files under logging.files.
+- HTML knobs and graph canvas resolved with helpers (backward compatible).
 """
 
 import os
@@ -37,9 +18,7 @@ from typing import Dict, Any, Optional, Union
 # Settings helpers
 # -------------------------------
 def load_settings(settings_path: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Load YAML settings. If path is None, assume repo_root/mtr_script_settings.yaml.
-    """
+    """Load YAML settings (defaults to repo_root/mtr_script_settings.yaml)."""
     if settings_path is None:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         settings_path = os.path.join(base_dir, "mtr_script_settings.yaml")
@@ -47,47 +26,68 @@ def load_settings(settings_path: Optional[str] = None) -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 def repo_root() -> str:
-    """
-    Absolute path to the repo root.
-    utils.py lives in: <repo>/scripts/modules/utils.py
-    So repo root = parents[2].
-    """
+    """Absolute path to the repo root (../.. relative to this file)."""
     return str(Path(__file__).resolve().parents[2])
 
-def resolve_html_dir(settings: dict) -> str:
-    """
-    Resolve the website root where index/<ip>.html, data/, graphs/ live.
-    - settings['html_directory'] may be absolute or relative to repo root.
-    Ensures the directory exists.
-    """
-    root = Path(repo_root())
-    html_dir = settings.get("html_directory", "html")
-    p = Path(html_dir)
-    if not p.is_absolute():
-        p = root / html_dir
-    p = p.resolve()
-    p.mkdir(parents=True, exist_ok=True)
-    return str(p)
+# -------------------------------
+# Path resolution
+# -------------------------------
+def _get(settings: dict, dotted: str, default=None):
+    """Fetch nested dict keys using dot notation."""
+    cur = settings
+    for part in dotted.split('.'):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
 
-def resolve_graphs_dir(settings: dict) -> str:
-    """
-    Graphs directory. If graph_output_directory is not set,
-    defaults to <html_dir>/graphs. Ensures the directory exists.
-    """
-    override = settings.get("graph_output_directory")
-    if override:
-        p = Path(override)
-        if not p.is_absolute():
-            p = Path(repo_root()) / override
-    else:
-        p = Path(resolve_html_dir(settings)) / "graphs"
-    p = p.resolve()
-    p.mkdir(parents=True, exist_ok=True)
-    return str(p)
+def get_path(settings: dict, key: str, legacy_keys=None, default=None) -> str:
+    """Resolve a path from settings['paths'][key] with fallback to legacy keys."""
+    val = _get(settings, f"paths.{key}")
+    if val:
+        return str(val)
+    if legacy_keys:
+        for k in legacy_keys:
+            if k in settings and settings[k]:
+                return str(settings[k])
+    return default
+
+def resolve_all_paths(settings: dict) -> Dict[str, str]:
+    """Return canonical paths with legacy fallbacks."""
+    return {
+        "logs":       get_path(settings, "logs",       ["log_directory"],           "logs"),
+        "html":       get_path(settings, "html",       ["html_directory"],          "html"),
+        "graphs":     get_path(settings, "graphs",     ["graph_output_directory"],  "html/graphs"),
+        "rrd":        get_path(settings, "rrd",        ["rrd_directory"],           "data"),
+        "traceroute": get_path(settings, "traceroute", ["traceroute_directory"],    "traceroute"),
+        "fping":      get_path(settings, "fping",      ["fping_path"],              "/usr/sbin/fping"),
+    }
 
 def resolve_targets_path() -> str:
     """Absolute path to mtr_targets.yaml at repo root."""
     return str(Path(repo_root()) / "mtr_targets.yaml")
+
+# -------------------------------
+# HTML & graph helpers
+# -------------------------------
+def get_html_ranges(settings: dict):
+    """Return html.time_ranges (new) or graph_time_ranges (legacy)."""
+    return _get(settings, "html.time_ranges") or settings.get("graph_time_ranges", [])
+
+def resolve_html_knobs(settings: dict):
+    """Return HTML knobs: auto_refresh_seconds, log_lines_display."""
+    html = settings.get("html", {})
+    auto_refresh = html.get("auto_refresh_seconds", settings.get("html_auto_refresh_seconds", 0))
+    log_lines_display = html.get("log_lines_display", settings.get("log_lines_display", 50))
+    return auto_refresh, log_lines_display
+
+def resolve_canvas(settings: dict):
+    """Return graph canvas (width, height, max_hops) with legacy fallback."""
+    canvas = settings.get("graph_canvas", {})
+    width = canvas.get("width", settings.get("graph_width", 800))
+    height = canvas.get("height", settings.get("graph_height", 200))
+    max_hops = canvas.get("max_hops", settings.get("max_hops", 30))
+    return width, height, max_hops
 
 # -------------------------------
 # Logging helpers
@@ -99,30 +99,29 @@ _LEVELS = {
     "INFO":     logging.INFO,     "info":     logging.INFO,
     "DEBUG":    logging.DEBUG,    "debug":    logging.DEBUG,
 }
-def _resolve_level(name: str, settings: Dict[str, Any], default_level: Union[str, int] = "INFO") -> int:
-    """
-    Resolve an integer log level for a given logger name from settings.logging_levels.
-    Falls back to default_level (string or int).
-    """
-    lvl = default_level
-    if isinstance(default_level, int):
-        lvl = default_level
-    else:
-        lvl = _LEVELS.get(str(default_level), logging.INFO)
 
-    levels = (settings or {}).get("logging_levels", {}) or {}
-    raw = levels.get(name, None)
-    if raw is None:
-        return lvl
-    return _LEVELS.get(str(raw), lvl)
+def get_log_levels(settings: dict):
+    """Return logging.levels (new) or legacy logging_levels."""
+    return _get(settings, "logging.levels") or settings.get("logging_levels", {})
+
+def get_log_file(settings: dict, name: str, default_filename=None):
+    """Return log filename from logging.files or fallback."""
+    files = _get(settings, "logging.files") or {}
+    if name in files:
+        return files[name]
+    return default_filename or f"{name}.log"
+
+def _resolve_level(name: str, settings: Dict[str, Any], default_level: Union[str, int] = "INFO") -> int:
+    """Resolve numeric log level for a logger."""
+    base = _LEVELS.get(str(default_level), logging.INFO) if not isinstance(default_level, int) else default_level
+    levels = get_log_levels(settings)
+    raw = levels.get(name)
+    return _LEVELS.get(str(raw), base) if raw else base
 
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 def _make_file_handler(path: str, level: int) -> logging.Handler:
-    """
-    Simple file handler (no rotation here; you can swap to TimedRotatingFileHandler if desired).
-    """
     fh = logging.FileHandler(path, encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
@@ -135,81 +134,66 @@ def _make_console_handler(level: int) -> logging.Handler:
     return ch
 
 def refresh_logger_levels(logger: logging.Logger, name: str, settings: Dict[str, Any]) -> None:
-    """
-    Re-apply the effective level from settings to the logger and ALL its handlers.
-    Safe to call after every settings reload without adding duplicate handlers.
-    """
-    if logger is None:
+    """Re-apply the effective level from settings to an existing logger."""
+    if not logger:
         return
-    # Make sure nothing bubbles to root (root may be INFO)
     logger.propagate = False
-
-    new_level = _resolve_level(name, settings, default_level="INFO")
-    # Accept everything in the logger; handlers do the filtering
+    new_level = _resolve_level(name, settings, "INFO")
     logger.setLevel(logging.DEBUG)
-
-    # Update existing handlers to the new level
     for h in getattr(logger, "handlers", []):
         h.setLevel(new_level)
 
 def setup_logger(
     name: str,
-    log_directory: str,
-    log_filename: str,
     settings: Optional[Dict[str, Any]] = None,
     default_level: Union[str, int] = "INFO",
     extra_file: Optional[str] = None,
 ) -> logging.Logger:
     """
     Create or retrieve a logger:
-    - No propagation to root (prevents unintended INFO from root handlers)
-    - On every call, (re)apply the configured level to logger + all handlers
-    - Idempotent handler creation (won't duplicate handlers)
-    - Optional per-target extra file handler
-    - Optional console handler via settings['enable_console_logging'] (default False)
+    - Uses paths.logs for directory
+    - Uses logging.files for filename (fallback <name>.log)
+    - Honors logging.levels
     """
-    _ensure_dir(log_directory)
+    settings = settings or {}
+    paths = resolve_all_paths(settings)
+    log_dir = paths["logs"]
+    _ensure_dir(log_dir)
+
+    log_filename = get_log_file(settings, name)
+    log_path = os.path.join(log_dir, log_filename)
+    extra_path = os.path.join(log_dir, extra_file) if extra_file else None
+
     logger = logging.getLogger(name)
     logger.propagate = False
-
-    # Always set logger to capture all; handlers decide filtering
     logger.setLevel(logging.DEBUG)
 
-    # Resolve current effective level from settings
-    effective_level = _resolve_level(name, settings or {}, default_level=default_level)
-
-    # Build stable file paths
-    primary_path = os.path.join(log_directory, log_filename)
-    extra_path = os.path.join(log_directory, extra_file) if extra_file else None
-
-    # Track handler keys to avoid duplicates across repeated calls
+    effective_level = _resolve_level(name, settings, default_level)
     handler_keys = getattr(logger, "_handler_keys", set())
 
-    # Primary file handler
-    primary_key = f"file::{primary_path}"
-    if primary_key not in handler_keys:
-        logger.addHandler(_make_file_handler(primary_path, effective_level))
-        handler_keys.add(primary_key)
+    # Primary handler
+    pk = f"file::{log_path}"
+    if pk not in handler_keys:
+        logger.addHandler(_make_file_handler(log_path, effective_level))
+        handler_keys.add(pk)
 
-    # Optional per-target handler
+    # Extra handler
     if extra_path:
-        extra_key = f"file::{extra_path}"
-        if extra_key not in handler_keys:
+        ek = f"file::{extra_path}"
+        if ek not in handler_keys:
             logger.addHandler(_make_file_handler(extra_path, effective_level))
-            handler_keys.add(extra_key)
+            handler_keys.add(ek)
 
-    # Optional console handler (default off for services/cron)
-    enable_console = bool((settings or {}).get("enable_console_logging", False))
-    console_key = "console::stdout"
-    if enable_console and console_key not in handler_keys:
-        logger.addHandler(_make_console_handler(effective_level))
-        handler_keys.add(console_key)
+    # Console handler
+    if settings.get("enable_console_logging", False):
+        ck = "console::stdout"
+        if ck not in handler_keys:
+            logger.addHandler(_make_console_handler(effective_level))
+            handler_keys.add(ck)
 
-    # Save keys back for future idempotent calls
     logger._handler_keys = handler_keys
 
-    # IMPORTANT: Even if handlers already existed from a previous call,
-    # re-apply the current level so YAML changes take effect immediately.
+    # Refresh handler levels after settings reload
     for h in logger.handlers:
         h.setLevel(effective_level)
 
