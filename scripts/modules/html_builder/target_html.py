@@ -15,9 +15,9 @@ from datetime import datetime
 from modules.utils import setup_logger, resolve_html_dir
 from modules.rrd_metrics import get_rrd_metrics
 
-def generate_target_html(ip, description, hops, settings):
-    logger = setup_logger("target_html", settings.get("log_directory", "/tmp"),
-                          "target_html.log", settings=settings)
+def generate_target_html(ip, description, hops, settings, logger=None):
+    logger = logger or setup_logger("target_html", settings.get("log_directory", "/tmp"),
+                                    "target_html.log", settings=settings)
 
     HTML_DIR = resolve_html_dir(settings)
     DATA_DIR = os.path.join(HTML_DIR, "data")
