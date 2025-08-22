@@ -238,15 +238,8 @@ def update_rrd(rrd_path: str,
             by_index[n] = h
 
     # Resolve the debug log path if any
-    debug_path: Optional[str] = None
     if debug_log:
-        if isinstance(debug_log, str):
-            if os.path.isdir(debug_log):
-                debug_path = os.path.join(rrd_dir, "rrd_debug.log")
-            else:
-                debug_path = debug_log
-        else:
-            debug_path = os.path.join(rrd_dir, "rrd_debug.log")
+      logger.debug(f"[{ip}] (multi) values: {values}")
 
     # ------------------------------
     # Update the (single) multi-hop RRD if it exists
