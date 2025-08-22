@@ -48,6 +48,7 @@ import yaml
 import signal
 import threading
 from typing import Dict, List, Optional
+from modules.utils import load_settings, setup_logger, refresh_logger_levels, resolve_all_paths  # add resolve_all_paths
 
 # --- Make "scripts/modules" importable whether run via systemd or shell ---
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -156,12 +157,8 @@ def _read_controller_policy(settings: Dict, logger) -> Dict:
 def main() -> int:
     # 1) Load settings (controls logging behavior) and create the 'controller' logger
     settings = load_settings(SETTINGS_FILE)
-    logger = setup_logger(
-        "controller",
-        settings.get("log_directory", "/tmp"),
-        "controller.log",
-        settings=settings
-    )
+    paths = resolve_all_paths(settings)
+    logger = setup_logger("controller", settings=settings)
 
     # 2) Instantiate helpers
     watchdogs = WatchdogManager(
