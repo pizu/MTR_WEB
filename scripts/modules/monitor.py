@@ -297,19 +297,18 @@ def monitor_target(ip, source_ip, settings, logger):
         curr_mtime = _safe_mtime(SETTINGS_FILE)
         if curr_mtime != last_settings_mtime and curr_mtime > 0:
             try:
-                settings = load_settings(SETTINGS_FILE)
-                refresh_logger_levels(logger, "mtr_watchdog", settings)
-                rrd_dir        = settings.get("rrd_directory", rrd_dir)
-                log_directory  = settings.get("log_directory", log_directory)
-                interval       = int(settings.get("interval_seconds", interval))
-                severity_rules = settings.get("log_severity_rules", severity_rules)
-                os.makedirs(rrd_dir, exist_ok=True)
-                rrd_path      = os.path.join(rrd_dir, f"{ip}.rrd")
-                debug_rrd_log = os.path.join(log_directory, "rrd_debug.log")
-                last_settings_mtime = curr_mtime
-                logger.info(f"[{ip}] Settings reloaded. interval={interval}s, rrd_dir={rrd_dir}")
+              settings = load_settings(SETTINGS_FILE)
+              refresh_logger_levels(logger, "mtr_watchdog", settings)
+              rrd_dir        = settings.get("rrd_directory", rrd_dir)
+              interval       = int(settings.get("interval_seconds", interval))
+              severity_rules = settings.get("log_severity_rules", severity_rules)
+              os.makedirs(rrd_dir, exist_ok=True)
+              rrd_path      = os.path.join(rrd_dir, f"{ip}.rrd")
+              debug_rrd_log = bool(settings.get("rrd", {}).get("debug_values", False))
+              last_settings_mtime = curr_mtime
+              logger.info(f"[{ip}] Settings reloaded. interval={interval}s, rrd_dir={rrd_dir}")
             except Exception as e:
-                logger.error(f"[{ip}] Failed to hot-reload settings: {e}")
+              logger.error(f"[{ip}] Failed to hot-reload settings: {e}")
 
         # --- Run one MTR snapshot ---
         hops = run_mtr(ip, source_ip, logger, settings=settings)
