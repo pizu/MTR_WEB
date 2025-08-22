@@ -13,13 +13,15 @@ CLI compatibility:
 Exit codes:
 - 0 on success (even if some targets/ranges fail; those failures are logged)
 - 1 for fatal launcher errors (settings unreadable, targets file unreadable, etc.)
+
+No functional change here other than depending on the updated exporter which now emits
+'varies' from 'stdev' DS if present in the RRD schema.
 """
 
 import os
 import sys
 import argparse
 import yaml
-from modules.utils import load_settings, setup_logger, resolve_targets_path, get_html_ranges  # add get_html_ranges
 
 # --- make scripts/modules importable (works via systemd and shell) ---
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -29,7 +31,8 @@ for p in (MODULES_DIR, SCRIPTS_DIR, REPO_ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from modules.rrd_exporter import export_ip_timerange_json                   # noqa: E402
+from modules.utils import load_settings, setup_logger, resolve_targets_path, get_html_ranges  # noqa: E402
+from modules.rrd_exporter import export_ip_timerange_json                                     # noqa: E402
 
 
 def resolve_settings_path(default_name: str = "mtr_script_settings.yaml") -> str:
