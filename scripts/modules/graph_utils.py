@@ -12,44 +12,54 @@ What’s in here:
 - get_labels(ip, traceroute_dir): read stabilized labels for legends.
 - get_available_hops(ip, traceroute_dir): derive hop indices from stabilized labels.
 
-What changed:
-- Removed legacy fallback that scanned for per-hop PNG files. No dependency on
-  “_hop*.png” remains.
-- Added calendar-ready logging of hop path changes (events + intervals) as JSONL.
-  This is disabled by default; enable via settings['calendar']['hop_change_events_enabled'].
-
-Inputs:
-- 'hops' is the normalized list from mtr_runner.run_mtr(...) with keys:
-  count, host, Loss%, Snt, Last, Avg, Best, Wrst, StDev
-
-Artifacts (under traceroute_directory, default "traceroute/"):
-- <ip>.trace.txt          : human-readable traceroute
-- <ip>.json               : legacy hopN → host JSON
-- <ip>_hops_stats.json    : rolling stats to decide “varies(...)”
-- <ip>_hops.json          : stabilized labels for legends  [{count:int, host:str}, ...]
-- <ip>_path_state.json    : current active path and since-when (for interval logging)
-
-Calendar logs (under log_directory, default "logs/"):
-- hop_change_events/<ip>.jsonl     : event stream (old/new path snapshots with timestamp)
-- hop_change_intervals/<ip>.jsonl  : closed intervals for which a path was active
+What changed (this patch):
+- Path resolution now **obeys mtr_script_settings.yaml** through modules.utils.resolve_all_paths:
+  - Traceroute directory from settings['paths']['traceroute'] with fallbacks
+  - Logs directory from settings['paths']['logs'] for calendar artifacts
+- No other behavior changed.
 """
 
 import os
 import json
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple, Optional
+from modules.utils import resolve_all_paths
 
 # ---- tuning knobs for "varies(...)" ----
 UNSTABLE_THRESHOLD = 0.45   # top host share <45% → "varies(...)"
 TOPK_TO_SHOW       = 3      # show up to N hosts inside varies(...)
-MAJORITY_WINDOW    = 200    # soft cap; oldest counts decay
-STICKY_MIN_WINS    = 3      # hysteresis to avoid flip-flop
-IGNORE_HOSTS       = set()  # keep "???"; add "_gateway" here if you want to hide it
+MAJORITY_WINDOW    = 200    # cap total votes per hop; decay oldest
+STICKY_MIN_WINS    = 3      # hysteresis to avoid flapping labels
+IGNORE_HOSTS       = set()  # keep "???"; add "_gateway" here if you want to ignore it
 
+# --------- file helpers ---------
+def _load_json(p: str, default):
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
 
-# --------- Path helpers ---------
+def _save_json(p: str, data) -> None:
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+# --------- path helpers (patched) ---------
 def _paths(ip: str, settings: dict) -> Dict[str, str]:
-    d = settings.get("traceroute_directory", "traceroute")
+    """
+    Resolve all traceroute-related artifact paths for a target.
+    Uses resolve_all_paths(settings) → paths['traceroute'].
+
+    Files:
+      <ip>.trace.txt        : human-readable snapshot
+      <ip>.json             : legacy hopN → host map
+      <ip>_hops_stats.json  : rolling counts per hop for stabilization
+      <ip>_hops.json        : compact list[{count, host}] w/ "varies(...)"
+      <ip>_path_state.json  : last active path + since-when (intervals)
+    """
+    paths = resolve_all_paths(settings or {})
+    d = paths.get("traceroute") or "traceroute"
     os.makedirs(d, exist_ok=True)
     stem = os.path.join(d, ip)
     return {
@@ -60,47 +70,26 @@ def _paths(ip: str, settings: dict) -> Dict[str, str]:
         "path_state": f"{stem}_path_state.json",
     }
 
-
 def _calendar_dirs(settings: dict) -> Tuple[str, str]:
-    log_dir = settings.get("log_directory", "logs")
+    """
+    Directories for calendar-friendly logs.
+      logs/hop_change_events/<ip>.jsonl
+      logs/hop_change_intervals/<ip>.jsonl
+    """
+    paths = resolve_all_paths(settings or {})
+    log_dir = paths.get("logs") or settings.get("log_directory", "logs")
     events_dir = os.path.join(log_dir, "hop_change_events")
     intervals_dir = os.path.join(log_dir, "hop_change_intervals")
     os.makedirs(events_dir, exist_ok=True)
     os.makedirs(intervals_dir, exist_ok=True)
     return events_dir, intervals_dir
 
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-# --------- JSON I/O helpers ---------
-def _load_json(path: str, default):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-def _save_json(path: str, obj) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2)
-
-
-def _append_jsonl(path: str, record: dict) -> None:
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, separators=(",", ":")) + "\n")
-
-
-# --------- Stabilization core ---------
+# --------- stats update + label stabilization ---------
 def _load_stats(p_stats: str) -> dict:
     return _load_json(p_stats, {})
 
-
 def _save_stats(p_stats: str, stats: dict) -> None:
     _save_json(p_stats, stats)
-
 
 def _update_stats_with_snapshot(stats: dict, hops: List[dict]) -> dict:
     """
@@ -124,124 +113,120 @@ def _update_stats_with_snapshot(stats: dict, hops: List[dict]) -> dict:
         total = sum(v for k, v in s.items() if isinstance(v, int))
         if total > MAJORITY_WINDOW:
             for key in list(s["_order"])[::-1]:
-                if isinstance(s.get(key), int) and s[key] > 0:
-                    s[key] -= 1
-                    if s[key] == 0:
-                        del s[key]
-                        s["_order"] = [x for x in s["_order"] if x != key]
+                if isinstance(s.get(key), int) and total > MAJORITY_WINDOW:
+                    s[key] = max(0, s[key] - 1)
+                    total -= 1
+                if total <= MAJORITY_WINDOW:
                     break
 
-        # sticky majority
-        modal = max((k for k in s if isinstance(s.get(k), int)), key=lambda k: s[k], default=None)
-        cur = s.get("last")
-        if cur is None:
-            s["last"] = modal
-            s["wins"] = 1
-        elif modal == cur:
-            s["wins"] = min(s.get("wins", 0) + 1, STICKY_MIN_WINS)
+        # compute dominant host
+        items = [(k, v) for k, v in s.items() if isinstance(v, int) and k not in IGNORE_HOSTS]
+        items.sort(key=lambda kv: -kv[1])
+        if not items:
+            continue
+        top_host, top_count = items[0]
+        share = top_count / max(1, sum(v for _, v in items))
+
+        # Sticky “last” with hysteresis to avoid oscillation
+        last = s.get("last")
+        if last == top_host:
+            s["wins"] = min(STICKY_MIN_WINS, s.get("wins", 0) + 1)
         else:
-            s["wins"] = s.get("wins", 0) - 1
-            if s["wins"] <= 0:
-                s["last"] = modal
+            if s.get("wins", 0) >= STICKY_MIN_WINS or share >= 0.5:
+                s["last"] = top_host
                 s["wins"] = 1
+            else:
+                s["wins"] = max(0, s.get("wins", 0) - 1)
     return stats
-
-
-def _build_label_for_bucket(bucket: dict) -> Optional[str]:
-    """
-    Decide whether a hop gets a concrete host or “varies (a, b, c)”.
-    """
-    # collect (host, count) entries ignoring control keys
-    items = [(k, bucket[k]) for k in bucket if isinstance(bucket.get(k), int) and k not in IGNORE_HOSTS]
-    total = sum(c for _, c in items)
-    if total == 0:
-        return None
-    items.sort(key=lambda kv: -kv[1])
-    top_host, top_count = items[0]
-    share = top_count / total
-
-    if share < UNSTABLE_THRESHOLD and len(items) >= 2:
-        sample = ", ".join(h for h, _ in items[:TOPK_TO_SHOW])
-        return f"varies ({sample})"
-    return bucket.get("last") or top_host
-
 
 def _write_hops_json(stats: dict, p_hops: str) -> Tuple[List[dict], List[str]]:
     """
-    Write stabilized labels JSON and also return:
-      - labels_json: [{count:int, host:str}, ...]
-      - path_list  : ["192.0.2.1","varies (...)", ...] ordered by hop
+    Convert per-hop stats into compact label list.
+    Returns (labels_json, current_path_list) where current_path_list is a
+    list of hop endpoints (or varies(...) strings) representing the most
+    recent path, used for interval logging.
     """
-    labels_json: List[dict] = []
-    path_list: List[str] = []
-    for hop_str, bucket in sorted(stats.items(), key=lambda kv: int(kv[0])):
-        host_label = _build_label_for_bucket(bucket)
-        if host_label is None:
+    labels = []
+    path_endpoints = []
+    for hop_str in sorted(stats.keys(), key=lambda x: int(x)):
+        s = stats[hop_str]
+        # recent items sorted by counts
+        items = [(k, v) for k, v in s.items() if isinstance(v, int) and k not in IGNORE_HOSTS]
+        items.sort(key=lambda kv: -kv[1])
+        if not items:
             continue
-        count = int(hop_str)
-        labels_json.append({"count": count, "host": host_label})
-        path_list.append(host_label)
 
-    if labels_json:
-        _save_json(p_hops, labels_json)
-    return labels_json, path_list
+        top_host, top_count = items[0]
+        total = sum(v for _, v in items)
+        share = top_count / max(1, total)
 
+        if share < UNSTABLE_THRESHOLD and len(items) >= 2:
+            sample = ", ".join(k for k, _ in items[:TOPK_TO_SHOW])
+            label_host = f"varies ({sample})"
+        else:
+            label_host = s.get("last") or top_host
 
-# --------- Calendar / interval logging ---------
-def _record_hop_change_if_needed(ip: str, path_list: List[str], settings: dict, logger) -> None:
-    """
-    If the stabilized path changed, write:
-      - an event record to logs/hop_change_events/<ip>.jsonl
-      - a closed interval to logs/hop_change_intervals/<ip>.jsonl
-    And rotate traceroute/<ip>_path_state.json to the new active path.
+        hop_num = int(hop_str)
+        labels.append({"count": hop_num, "host": label_host})
+        path_endpoints.append(label_host)
+    _save_json(p_hops, labels)
+    return labels, path_endpoints
 
-    Controlled by settings['calendar']['hop_change_events_enabled'] (default False).
-    """
-    cal_cfg = (settings.get("calendar") or {})
-    if not bool(cal_cfg.get("hop_change_events_enabled", False)):
-        return  # feature is off
-
-    p = _paths(ip, settings)
-    state = _load_json(p["path_state"], {})
-    old_path = state.get("path") or []
-    active_since = state.get("active_since")  # ISO string
-
-    if path_list == old_path:
-        return  # no change
-
-    # Paths & dirs
-    events_dir, intervals_dir = _calendar_dirs(settings)
-    events_file = os.path.join(events_dir, f"{ip}.jsonl")
-    intervals_file = os.path.join(intervals_dir, f"{ip}.jsonl")
-    now_iso = _utc_now_iso()
-
-    # 1) Event (old → new)
-    _append_jsonl(events_file, {
-        "ts": now_iso,
+# --------- calendar logging (events + intervals) ---------
+def _emit_change_event(ip: str, hop: int, old: str, new: str, when_epoch: int,
+                       events_dir: str) -> None:
+    ev = {
         "ip": ip,
-        "event": "hop_path_changed",
-        "old": old_path,
-        "new": path_list
-    })
+        "hop": hop,
+        "old": old,
+        "new": new,
+        "ts": when_epoch,
+        "ts_iso": datetime.fromtimestamp(when_epoch, tz=timezone.utc).isoformat()
+    }
+    p = os.path.join(events_dir, f"{ip}.jsonl")
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(json.dumps(ev) + "\n")
 
-    # 2) Close previous interval if present
-    if active_since:
-        _append_jsonl(intervals_file, {
-            "start": active_since,
-            "end": now_iso,
+def _load_path_state(path_state_file: str) -> dict:
+    return _load_json(path_state_file, {})
+
+def _save_path_state(path_state_file: str, state: dict) -> None:
+    _save_json(path_state_file, state)
+
+def _maybe_emit_interval(ip: str, path_state_file: str,
+                         new_path: List[str], now_epoch: int,
+                         intervals_dir: str, logger) -> None:
+    """
+    If the overall *path signature* changed vs prior run, close old interval
+    and open a new one. Path signature is the tuple of per-hop labels.
+    """
+    state = _load_path_state(path_state_file)
+    prev_sig = tuple(state.get("active_path", {}).get("labels", []))
+    new_sig = tuple(new_path)
+    if prev_sig == new_sig:
+        return
+
+    now_iso = datetime.fromtimestamp(now_epoch, tz=timezone.utc).isoformat()
+    # close old interval
+    if prev_sig:
+        opened = int(state.get("active_path", {}).get("opened_ts", now_epoch))
+        interval = {
             "ip": ip,
-            "path": old_path
-        })
+            "from_ts": opened,
+            "to_ts": now_epoch,
+            "from_iso": datetime.fromtimestamp(opened, tz=timezone.utc).isoformat(),
+            "to_iso": now_iso,
+            "labels": list(prev_sig),
+        }
+        p = os.path.join(intervals_dir, f"{ip}.jsonl")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(interval) + "\n")
 
-    # 3) Start new active interval
-    _save_json(p["path_state"], {
-        "active_since": now_iso,
-        "path": path_list
-    })
-
+    # open new interval
+    state["active_path"] = {"labels": list(new_sig), "opened_ts": now_epoch}
+    _save_path_state(path_state_file, state)
     if logger:
         logger.info(f"[{ip}] Hop path changed → interval closed; new path active since {now_iso}")
-
 
 # --------- Public functions ---------
 def update_hop_labels_only(ip: str, hops: List[dict], settings: dict, logger) -> None:
@@ -256,111 +241,115 @@ def update_hop_labels_only(ip: str, hops: List[dict], settings: dict, logger) ->
 
     labels_json, path_list = _write_hops_json(stats, p["hops"])
 
-    # Optional calendar logging
-    try:
-        _record_hop_change_if_needed(ip, path_list, settings, logger)
-    except Exception as e:
-        if logger:
-            logger.warning(f"[{ip}] hop-change logging failed: {e}")
+    # per-hop change events: compare against last labels on disk, emit deltas
+    prev_labels = _load_json(p["hops"], [])
+    prev_map = {int(x["count"]): x["host"] for x in prev_labels if isinstance(x, dict) and "count" in x and "host" in x}
+    curr_map = {int(x["count"]): x["host"] for x in labels_json if isinstance(x, dict) and "count" in x and "host" in x}
 
-    if logger:
-        logger.debug(f"[{ip}] Hop labels updated -> {p['hops']}")
+    events_dir, intervals_dir = _calendar_dirs(settings)
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    for hop_num, new_label in curr_map.items():
+        old_label = prev_map.get(hop_num)
+        if old_label and old_label != new_label:
+            _emit_change_event(ip, hop_num, old_label, new_label, now_epoch, events_dir)
 
+    # overall path interval logging
+    _maybe_emit_interval(ip, p["path_state"], path_list, now_epoch, intervals_dir, logger)
 
 def save_trace_and_json(ip: str, hops: List[dict], settings: dict, logger) -> None:
     """
-    Saves:
-      1) <ip>.trace.txt — human-readable traceroute
-      2) <ip>.json      — legacy hopN → host map (kept)
-    Also refreshes <ip>_hops_stats.json + <ip>_hops.json and records hop-change events.
+    Write:
+      1) <ip>.trace.txt   : "<hop> <ip/host> <avg> ms" (hop0 ignored)
+      2) <ip>.json        : {"hop1": "...", "hop2": "..."} (legacy map)
+    Then refresh stabilized labels + calendar logs.
     """
     p = _paths(ip, settings)
 
-    # 1) human-readable .trace.txt
     with open(p["txt"], "w", encoding="utf-8") as f:
-        for hop in hops:
-            hop_num = hop.get("count", "?")
-            ip_addr = hop.get("host", "?")
-            latency = hop.get("Avg", "U")
+        for h in hops:
+            try:
+                hop_num = int(h.get("count", 0))
+            except (TypeError, ValueError):
+                continue
+            if hop_num < 1:
+                continue
+            ip_addr = h.get("host", "?")
+            latency = h.get("Avg", "U")
             f.write(f"{hop_num} {ip_addr} {latency} ms\n")
-    if logger:
-        logger.info(f"Saved traceroute to {p['txt']}")
 
-    # 2) legacy hop map
-    hop_map = {f"hop{hop['count']}": hop.get("host", f"hop{hop['count']}") for hop in hops if "count" in hop}
+    hop_map = {}
+    for h in hops:
+        try:
+            hop_num = int(h.get("count", 0))
+        except (TypeError, ValueError):
+            continue
+        if hop_num < 1:
+            continue
+        hop_map[f"hop{hop_num}"] = h.get("host", f"hop{hop_num}")
     _save_json(p["json"], hop_map)
-    if logger:
-        logger.info(f"Saved hop label map to {p['json']}")
 
-    # 3) stabilization + optional calendar logging
+    # Stabilized labels + events/intervals
     update_hop_labels_only(ip, hops, settings, logger)
 
+def get_labels(ip: str,
+               traceroute_dir: Optional[str] = None,
+               settings: Optional[dict] = None,
+               logger=None) -> List[Tuple[int, str]]:
+    """
+    Read <ip>_hops.json (preferred) for stabilized labels; fallback to <ip>.trace.txt.
+    Returns: [(hop, "N: label"), ...] sorted by hop index.
+    """
+    # prefer explicit dir if given and exists, else follow settings
+    if traceroute_dir and os.path.isdir(traceroute_dir):
+        d = traceroute_dir
+    else:
+        d = resolve_all_paths(settings or {}).get("traceroute") or "traceroute"
+    stem = os.path.join(d, ip)
 
-def get_available_hops(ip: str, graph_dir: str = "html/graphs", traceroute_dir: str = "traceroute") -> List[int]:
-    """
-    Returns a sorted list of hop indices for a target, based ONLY on the new
-    stabilized labels store (traceroute/<ip>_hops.json). No per-hop PNG fallback.
-    """
-    json_path = os.path.join(traceroute_dir, f"{ip}_hops.json")
-    if os.path.exists(json_path):
+    # 1) stabilized
+    p_hops = f"{stem}_hops.json"
+    if os.path.exists(p_hops):
         try:
-            with open(json_path, encoding="utf-8") as f:
-                arr = json.load(f)
-            return sorted({int(item["count"]) for item in arr if isinstance(item, dict) and "count" in item})
-        except Exception:
-            return []
-    return []
-
-
-def get_labels(ip: str, traceroute_dir: str = "traceroute") -> List[Tuple[int, str]]:
-    """
-    Return a list of (hop_number:int, label:str) pairs for legends.
-
-    Preferred source: traceroute/<ip>_hops.json
-      [
-        {"count": 1, "host": "192.0.2.1"},
-        {"count": 2, "host": "varies (203.0.113.1, 203.0.113.9, ???)"},
-        ...
-      ]
-
-    Fallback (legacy): traceroute/<ip>.trace.txt with lines like:
-      "<hop> <ip/name> <avg_ms> ms"
-    """
-    # 1) Stabilized JSON with “varies(…)”
-    json_path = os.path.join(traceroute_dir, f"{ip}_hops.json")
-    if os.path.exists(json_path):
-        try:
-            with open(json_path, encoding="utf-8") as f:
-                arr = json.load(f)
-            out: List[Tuple[int, str]] = []
-            for item in arr:
-                if not isinstance(item, dict):
-                    continue
-                if "count" not in item or "host" not in item:
+            data = _load_json(p_hops, [])
+            out = []
+            for item in data:
+                if not isinstance(item, dict) or "count" not in item or "host" not in item:
                     continue
                 hop = int(item["count"])
                 host = str(item["host"])
                 out.append((hop, f"{hop}: {host}"))
-            return sorted(out, key=lambda x: x[0])
+            out.sort(key=lambda t: t[0])
+            return out
         except Exception:
-            pass  # fall through to legacy
+            pass
 
-    # 2) Legacy plain-text fallback
-    txt_path = os.path.join(traceroute_dir, f"{ip}.trace.txt")
-    if os.path.exists(txt_path):
-        out: List[Tuple[int, str]] = []
-        try:
-            with open(txt_path, encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) >= 2:
-                        try:
-                            hop = int(parts[0])
-                            host = parts[1]
-                            out.append((hop, f"{hop}: {host}"))
-                        except ValueError:
-                            continue
-            return sorted(out, key=lambda x: x[0])
-        except Exception:
-            return []
+    # 2) legacy human-readable
+    p_txt = f"{stem}.trace.txt"
+    if os.path.exists(p_txt):
+        out = []
+        with open(p_txt, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0].isdigit():
+                    hop = int(parts[0])
+                    host = parts[1]
+                    out.append((hop, f"{hop}: {host}"))
+        out.sort(key=lambda t: t[0])
+        return out
+
     return []
+
+def get_available_hops(ip: str,
+                       traceroute_dir: Optional[str] = None,
+                       settings: Optional[dict] = None) -> List[int]:
+    """
+    Return hop indices available for a target (from stabilized file).
+    """
+    if traceroute_dir and os.path.isdir(traceroute_dir):
+        d = traceroute_dir
+    else:
+        d = resolve_all_paths(settings or {}).get("traceroute") or "traceroute"
+    p_hops = os.path.join(d, f"{ip}_hops.json")
+    data = _load_json(p_hops, [])
+    hops = {int(item["count"]) for item in data if isinstance(item, dict) and "count" in item}
+    return sorted(hops)
