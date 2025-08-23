@@ -256,3 +256,63 @@ def setup_logger(
     if settings:
         levels = settings.get("logging_levels", {})
         level_name = levels._
+def refresh_logger_levels(settings: Dict[str, Any], logger_names: Optional[List[str]] = None) -> None:
+    """
+    Update logging levels for existing loggers according to settings['logging_levels'].
+
+    Behavior:
+      - Exact-name match first (e.g., 'controller', 'mtr_watchdog', 'rrd_exporter').
+      - If name starts with 'modules' and 'modules' key exists, use that as a group default.
+      - Otherwise fall back to 'default' (INFO if missing).
+      - Each logger's handlers also get their level updated to keep them in sync.
+
+    Example YAML:
+      logging_levels:
+        default: INFO
+        controller: DEBUG
+        mtr_watchdog: INFO
+        rrd_exporter: WARNING
+        modules: WARNING
+    """
+    levels_cfg = (settings or {}).get("logging_levels", {})
+    default_level = _level_from_name(levels_cfg.get("default", "INFO"))
+
+    # Optional: limit updates to a subset of names
+    names_to_consider: List[str]
+    if logger_names:
+        names_to_consider = logger_names
+    else:
+        # All currently-created loggers (skip placeholders)
+        names_to_consider = [
+            n for (n, obj) in logging.root.manager.loggerDict.items()
+            if isinstance(obj, logging.Logger)
+        ]
+        # Ensure root and our own are included
+        if "root" not in names_to_consider:
+            names_to_consider.append("root")
+
+    for name in names_to_consider:
+        lg = logging.getLogger(None if name == "root" else name)
+
+        # Decide desired level
+        level_name = levels_cfg.get(name)
+        if not level_name and name.startswith("modules"):
+            level_name = levels_cfg.get("modules")  # group default for module loggers
+        level = _level_from_name(level_name, default_level)
+
+        # Apply to logger
+        try:
+            lg.setLevel(level)
+        except Exception:
+            continue
+
+        # Apply to each handler (keep them aligned)
+        for h in lg.handlers:
+            try:
+                h.setLevel(level)
+            except Exception:
+                pass
+
+        # Optional: debug trace to the logger itself (only if not too noisy)
+        if lg.isEnabledFor(logging.DEBUG):
+            lg.debug(f"Logger '{name}' level refreshed to {logging.getLevelName(level)}")
