@@ -2,23 +2,43 @@
 """
 modules/rrd_exporter.py
 
-Exports Chart.js‑friendly JSON time‑series for a target IP and a time range label.
-Writes to <html_dir>/data/<ip>_<label>.json
+Purpose
+-------
+Export Chart.js‑friendly JSON time‑series for one target IP and one time range label
+(e.g. "30m", "1h"). The output is written under <html_dir>/data/<ip>_<label>.json.
 
-Fields included:
-- ip, label, seconds, step, timestamps[], epoch[]
-- rrd_window: {start_epoch, end_epoch, step}
-- hops[]:
-    hop, name, color,
-    varies (bool),
-    endpoints [ip...],
-    changes [{ip,first,last}...],
-    changes_in_window [{ip,first,last}...]  # clipped to this bundle’s RRD window
-    metrics {avg[], last[], best[], loss[], ...}
+Per-bundle JSON structure
+-------------------------
+{
+  "ip": "<target-ip>",
+  "label": "<range-label>",
+  "seconds": <window-seconds>,
+  "step": <rrd-step-seconds>,
+  "timestamps": ["HH:MM", ...],
+  "epoch": [<unix-epoch>, ...],
+  "rrd_window": { "start_epoch": <int>, "end_epoch": <int>, "step": <int> },
+  "hops": [
+    {
+      "hop": <int>,
+      "name": "N: <endpoint>",             # taken from traceroute/<target>.trace.txt
+      "color": "#rrggbb",                  # stable per hop index
+      "varies": <bool>,                    # true if this hop used >1 endpoint historically
+      "endpoints": ["ip1", "ip2", ...],    # distinct endpoints ever seen (from cache)
+      "changes": [                         # full history with timestamps (epoch)
+        {"ip":"ip1","first":1693500000,"last":1693502400},
+        {"ip":"ip2","first":1693503000,"last":1693504200}
+      ],
+      "changes_in_window": [ ... ],        # same as 'changes', clipped to this export window
+      "metrics": { "avg":[...], "last":[...], "best":[...], "loss":[...] }
+    }
+  ]
+}
 
-Notes:
-- RRD stores only numeric DS; varies is derived from hop labels + a small cache.
-- This version strictly follows YAML/env for traceroute folder, logging the choice.
+Design notes
+------------
+- RRD persists numeric series only; 'varies' is derived from hop labels and a small JSON cache.
+- We expose the RRD window so any calendar/timeline can be grounded in actual fetched data.
+- Traceroute directory is resolved following your YAML, with env/legacy fallbacks and clear logs.
 """
 
 import os
@@ -33,28 +53,33 @@ from typing import Dict, List, Tuple, Any, Optional
 from modules.graph_utils import get_labels
 from modules.utils import resolve_html_dir, resolve_all_paths, setup_logger
 
-# ---------- helpers ----------
+# -----------------------------
+# Small helpers
+# -----------------------------
 
 def _now_epoch() -> int:
     return int(time.time())
 
 def _color(hop_index: int) -> str:
+    """Deterministic color based on hop index (keeps color stable even if the IP changes)."""
     r = int((1 + math.sin(hop_index * 0.3)) * 127)
     g = int((1 + math.sin(hop_index * 0.3 + 2)) * 127)
     b = int((1 + math.sin(hop_index * 0.3 + 4)) * 127)
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def _fmt_ts(epoch: int) -> str:
+    """Format an epoch second as HH:MM (local time)."""
     try:
         return datetime.fromtimestamp(epoch).strftime("%H:%M")
     except Exception:
         return ""
 
 def _nan_to_none(v):
+    """Convert NaN/None to None, otherwise return float(v)."""
     try:
         if v is None:
             return None
-        if isinstance(v, float) and (v != v):
+        if isinstance(v, float) and (v != v):  # NaN
             return None
         return float(v)
     except Exception:
@@ -63,12 +88,16 @@ def _nan_to_none(v):
 def _ensure_dir(p: str):
     os.makedirs(os.path.dirname(p), exist_ok=True)
 
+# Extract endpoint from a legend label like "7: 217.15.98.96".
 LABEL_ENDPOINT_RE = re.compile(r"^\s*\d+\s*:\s*([^\s]+)")
+
 def _extract_endpoint(label_text: str) -> str:
     m = LABEL_ENDPOINT_RE.match(label_text or "")
     return m.group(1) if m else (label_text or "")
 
-# ---------- traceroute dir resolver (safeguard at exporter level) ----------
+# -----------------------------
+# Traceroute dir resolver (safeguard at exporter level)
+# -----------------------------
 
 def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) -> Optional[str]:
     """
@@ -79,6 +108,7 @@ def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) 
       4) paths['traceroute']       (from resolve_all_paths)
       5) /opt/scripts/MTR_WEB/traceroute (if exists)
       6) /opt/scripts/MTR_WEB/traces     (if exists)
+    Logs the final choice. Returns None if nothing found.
     """
     cfg_paths = (settings or {}).get("paths", {}) or {}
     env_dir   = os.environ.get("MTR_TRACEROUTE_DIR")
@@ -107,12 +137,19 @@ def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) 
         if chosen:
             logger.info(f"Using traceroute dir ({chosen_tag}): {chosen}")
         else:
-            logger.warning("No usable traceroute path found; hop labels empty and 'varies' cannot update.")
+            logger.warning("No usable traceroute path found; hop labels will be empty and 'varies' cannot update.")
     return chosen
 
-# ---------- hop‑IP cache with timestamps ----------
+# -----------------------------
+# Hop-IP cache with timestamps
+# -----------------------------
 
 def _cache_dir(paths: Dict[str, str], html_dir: str) -> str:
+    """
+    Pick a writable cache directory:
+      - Prefer paths['cache'] when provided by your utils.
+      - Else use <html_dir>/var/hop_ip_cache
+    """
     base = (paths or {}).get("cache")
     if not base:
         base = os.path.join(html_dir, "var", "hop_ip_cache")
@@ -124,6 +161,12 @@ def _cache_path(cache_dir: str, ip: str) -> str:
     return os.path.join(cache_dir, f"{safe}.hopips.json")
 
 def _normalize_cache_entry_list(raw_val) -> List[Dict[str, Any]]:
+    """
+    Accept either:
+      - list[str]                                      (legacy format)
+      - list[{"ip":str,"first":int,"last":int}]        (current format)
+    Returns a list of dicts with keys ip/first/last (deduped by ip).
+    """
     out: List[Dict[str, Any]] = []
     now = _now_epoch()
     if not isinstance(raw_val, list):
@@ -131,34 +174,42 @@ def _normalize_cache_entry_list(raw_val) -> List[Dict[str, Any]]:
     for v in raw_val:
         if isinstance(v, dict) and "ip" in v:
             ip = str(v.get("ip") or "")
-            if not ip: continue
+            if not ip:
+                continue
             first = int(v.get("first") or now)
             last  = int(v.get("last")  or first)
             out.append({"ip": ip, "first": first, "last": last})
         else:
             ip = str(v or "")
-            if not ip: continue
+            if not ip:
+                continue
             out.append({"ip": ip, "first": now, "last": now})
-    # merge duplicates
+    # merge duplicates by IP
     merged: Dict[str, Dict[str, Any]] = {}
     for rec in out:
         ip = rec["ip"]
-        if ip in merged:
-            merged[ip]["first"] = min(merged[ip]["first"], rec["first"])
-            merged[ip]["last"]  = max(merged[ip]["last"],  rec["last"])
+        prev = merged.get(ip)
+        if prev:
+            prev["first"] = min(prev["first"], rec["first"])
+            prev["last"]  = max(prev["last"],  rec["last"])
         else:
             merged[ip] = dict(rec)
     return list(merged.values())
 
 def _load_cache(cache_file: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Load cache JSON (per-hop lists), tolerant to legacy format."""
     try:
         with open(cache_file, "r", encoding="utf-8") as f:
             data = json.load(f) or {}
-        return {k: _normalize_cache_entry_list(v) for k, v in data.items()}
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for k, v in data.items():
+            out[k] = _normalize_cache_entry_list(v)
+        return out
     except Exception:
         return {}
 
 def _save_cache(cache_file: str, data: Dict[str, List[Dict[str, Any]]]) -> None:
+    """Best-effort write of the cache file."""
     try:
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         with open(cache_file, "w", encoding="utf-8") as f:
@@ -167,10 +218,16 @@ def _save_cache(cache_file: str, data: Dict[str, List[Dict[str, Any]]]) -> None:
         pass
 
 def _update_cache_with_current(
-    cache: Dict[str, List[Dict[str, Any]]],
+    cache: Dict[str, List[Dict[str, Any]]]],
     hops_legend: List[Tuple[int, str]],
     max_values_per_hop: int = 20
 ) -> Dict[str, bool]:
+    """
+    Update cache with the current endpoints:
+      - If endpoint already present for hop -> update its 'last' timestamp.
+      - Else append a new record with first=last=now (and cap list length).
+    Returns {hop_index_str: varies_bool} where varies means >1 distinct IPs.
+    """
     now = _now_epoch()
     varies_flags: Dict[str, bool] = {}
     for hop_index, label_text in hops_legend:
@@ -185,7 +242,8 @@ def _update_cache_with_current(
                 break
         if not found and endpoint:
             lst.append({"ip": endpoint, "first": now, "last": now})
-            lst = sorted(lst, key=lambda r: int(r.get("first", 0)))
+            # keep only the newest N by 'first'
+            lst = sorted(lst, key=lambda r: int(r.get("first", 0)))  # oldest..newest
             if len(lst) > max_values_per_hop:
                 lst = lst[-max_values_per_hop:]
         cache[key] = lst
@@ -193,6 +251,10 @@ def _update_cache_with_current(
     return varies_flags
 
 def _clip_changes_to_window(changes: List[Dict[str, Any]], start_epoch: int, end_epoch: int) -> List[Dict[str, Any]]:
+    """
+    Return copies of change records that overlap the [start_epoch, end_epoch) window.
+    Times are clipped to the window so your UI/calendar can use them directly.
+    """
     if not isinstance(changes, list):
         return []
     out: List[Dict[str, Any]] = []
@@ -201,6 +263,7 @@ def _clip_changes_to_window(changes: List[Dict[str, Any]], start_epoch: int, end
             ip = rec.get("ip")
             a = int(rec.get("first", 0))
             b = int(rec.get("last", a))
+            # no overlap
             if b < start_epoch or a >= end_epoch:
                 continue
             a2 = max(a, start_epoch)
@@ -210,46 +273,60 @@ def _clip_changes_to_window(changes: List[Dict[str, Any]], start_epoch: int, end
             continue
     return out
 
-# ---------- export ----------
+# -----------------------------
+# Export
+# -----------------------------
 
 def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, logger=None) -> str:
+    """
+    Export one JSON bundle for (ip, label, seconds).
+
+    Includes:
+      - per-hop metrics
+      - per-hop variation info (varies, endpoints, changes)
+      - per-hop changes_in_window (history clipped to RRD window)
+      - top-level rrd_window {start_epoch, end_epoch, step}
+    """
     logger = logger or setup_logger("rrd_exporter", settings=settings)
 
-    paths = resolve_all_paths(settings)
-    RRD_DIR  = paths["rrd"]
+    paths   = resolve_all_paths(settings)
+    RRD_DIR = paths["rrd"]
     HTML_DIR = resolve_html_dir(settings)
     DATA_DIR = os.path.join(HTML_DIR, "data")
     os.makedirs(DATA_DIR, exist_ok=True)
     _ensure_dir(os.path.join(DATA_DIR, "x"))
 
-    # DS names from YAML
+    # Which metrics to export (from DS schema in settings)
     schema_metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", []) if ds.get("name")]
 
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
 
+    # If missing RRD, write a stub
     if not os.path.exists(rrd_path):
-        out = {"ip": ip, "label": label, "seconds": int(seconds), "step": None,
-               "timestamps": [], "epoch": [], "rrd_window": None, "hops": []}
+        out = {
+            "ip": ip, "label": label, "seconds": int(seconds), "step": None,
+            "timestamps": [], "epoch": [], "rrd_window": None, "hops": []
+        }
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
         logger.warning(f"[{ip}] RRD missing, wrote stub: {out_path}")
         return out_path
 
-    # Resolve traceroute dir strictly following YAML/ENV (with safe fallbacks)
+    # Traceroute dir (strictly follow YAML/env; log choice)
     traceroute_dir = _resolve_traceroute_dir(paths, settings, logger=logger)
 
-    # Current labels (may be empty if dir not found)
+    # Legend labels (current snapshot; may be empty if dir not found)
     hops_legend = get_labels(ip, traceroute_dir=traceroute_dir) or []
 
-    # Update hop‑IP cache
+    # Cache (history) update
     cache_dir   = _cache_dir(paths, HTML_DIR)
     cache_file  = _cache_path(cache_dir, ip)
-    cache_state = _load_cache(cache_file)                 # { "1": [ {ip,first,last}, ... ], ... }
+    cache_state = _load_cache(cache_file)                              # { "1": [ {ip,first,last}, ... ], ... }
     varies_map  = _update_cache_with_current(cache_state, hops_legend)
     _save_cache(cache_file, cache_state)
 
-    # Fetch RRD data
+    # Fetch RRD: build time grid & series
     end = int(time.time())
     start = end - int(seconds)
     try:
@@ -258,40 +335,50 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         )
     except rrdtool.OperationalError as e:
         logger.warning(f"[{ip}] fetch failed for {label}: {e}")
-        out = {"ip": ip, "label": label, "seconds": int(seconds), "step": None,
-               "timestamps": [], "epoch": [], "rrd_window": None, "hops": []}
+        out = {
+            "ip": ip, "label": label, "seconds": int(seconds), "step": None,
+            "timestamps": [], "epoch": [], "rrd_window": None, "hops": []
+        }
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
         return out_path
 
     step = int(f_step) if f_step else None
     epochs = list(range(int(f_start), int(f_end), step)) if step and step > 0 else list(range(len(rows)))
+
+    # Keep arrays aligned if rrdtool returned a trailing slot we didn't compute
     if len(epochs) != len(rows):
         n = min(len(epochs), len(rows))
-        epochs, rows = epochs[:n], rows[:n]
+        epochs = epochs[:n]
+        rows = rows[:n]
 
+    # NOTE: time.time() (not time.now())
     labels_hhmm = [_fmt_ts(ts) for ts in epochs]
 
+    # Map DS names to columns
     name_to_idx = {name: i for i, name in enumerate(names or [])}
+
     def extract_series(ds_name: str):
-        col = name_to_idx.get(ds_name)
+        """Extract one DS timeseries; where missing, fill with None."""
+        col = name_to_idx.get(ds_name, None)
         if col is None:
             return [None] * len(rows)
-        vals = []
+        out_vals = []
         for r in rows:
             try:
-                vals.append(_nan_to_none(r[col]))
+                val = r[col]
             except Exception:
-                vals.append(None)
-        return vals
+                val = None
+            out_vals.append(_nan_to_none(val))
+        return out_vals
 
-    # Build hops block
+    # Build hops array
     hop_entries = []
     window_start = int(f_start)
     window_end   = int(f_end)
     for hop_index, label_text in hops_legend:
         key = str(int(hop_index))
-        full_changes = cache_state.get(key, [])
+        full_changes = cache_state.get(key, [])  # list of {ip,first,last}
         clipped      = _clip_changes_to_window(full_changes, window_start, window_end)
         entry = {
             "hop": int(hop_index),
@@ -300,11 +387,12 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             "varies": bool(varies_map.get(key, False)),
             "endpoints": [rec["ip"] for rec in full_changes],
             "changes": full_changes,
-            "changes_in_window": clipped,
+            "changes_in_window": clipped,  # for UI/calendar to use immediately
             "metrics": {}
         }
-        for m in schema_metrics:
-            entry["metrics"][m] = extract_series(f"hop{hop_index}_{m}")
+        for m_schema in schema_metrics:
+            ds = f"hop{hop_index}_{m_schema}"
+            entry["metrics"][m_schema] = extract_series(ds)
         hop_entries.append(entry)
 
     out = {
@@ -320,6 +408,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
+    # Logging that matches your style
     changed = [h for h in hop_entries if h.get("varies")]
     if changed:
         logger.info(f"[{ip}] varies on hops: {', '.join(str(h['hop']) for h in changed)}")
