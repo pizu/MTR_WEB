@@ -16,6 +16,7 @@ paths:
   graphs:      /opt/scripts/MTR_WEB/html/graphs/       # replaces: graph_output_directory
   rrd:         /opt/scripts/MTR_WEB/data/              # replaces: rrd_directory
   traceroute:  /opt/scripts/MTR_WEB/traces/            # replaces: traceroute_directory
+  cache:      /opt/scripts/MTR_WEB/html/var/hop_ip_cache   # optional; else defaults under html/var
 
   # Binaries or external tools (keep under paths for clarity)
   fping:       /usr/sbin/fping                         # replaces: fping_path
