@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-modules/graph_utils.py (STRICT PATHS)
+modules/graph_utils.py (STRICT TRACEROUTE PATH)
 
-- Stabilizes hop labels: writes <ip>_hops.json as "N: host" where host can be "varies (a, b)".
-- Tracks rolling per-hop votes in <ip>_hops_stats.json (NO DB writes unless called).
-- Emits calendar-friendly logs (events/intervals) under settings['paths']['logs'].
-
-STRICT POLICY:
-- Traceroute dir strictly from settings['paths']['traceroute']; no defaults.
+- Stabilizes hop labels into <traceroute>/<ip>_hops.json.
+- Emits hop-change events and whole-path intervals under logs/.
 """
 
 import os
@@ -36,7 +32,6 @@ def _save_json(p: str, data) -> None:
         json.dump(data, f, indent=2)
 
 def _strict_tr_dir(settings: dict) -> str:
-    paths = resolve_all_paths(settings or {})
     d = (settings or {}).get("paths", {}).get("traceroute")
     if not d or not os.path.isdir(d):
         raise FileNotFoundError("settings['paths']['traceroute'] is missing or does not exist.")
@@ -192,7 +187,7 @@ def update_hop_labels_only(ip: str, hops: List[dict], settings: dict, logger) ->
     _maybe_emit_interval(ip, p["path_state"], path_list, now_epoch, intervals_dir, logger)
 
 def save_trace_and_json(ip: str, hops: List[dict], settings: dict, logger) -> None:
-    """Writer (kept, but STRICT path): human trace + legacy map + stabilized labels."""
+    """Writer kept, but respects STRICT path."""
     p = _paths(ip, settings)
 
     with open(p["txt"], "w", encoding="utf-8") as f:
@@ -222,7 +217,6 @@ def save_trace_and_json(ip: str, hops: List[dict], settings: dict, logger) -> No
 
 def get_labels(ip: str, traceroute_dir: Optional[str] = None,
                settings: Optional[dict] = None, logger=None) -> List[Tuple[int, str]]:
-    # prefer explicit dir if valid; else STRICT from settings
     if traceroute_dir and os.path.isdir(traceroute_dir):
         d = traceroute_dir
     else:
