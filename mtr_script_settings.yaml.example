@@ -64,7 +64,6 @@ rrd:
     - { name: last, type: GAUGE, min: 0, max: 1000 }   # Last recorded latency (ms)
     - { name: best, type: GAUGE, min: 0, max: 1000 }   # Best latency (ms)
     - { name: loss, type: GAUGE, min: 0, max: 100 }    # Packet loss (%)
-    - { name: "stdev", type: "GAUGE", min: 0, max: "U" } # Varies
 
   # RRA sizing guidance:
   # rows = retention_seconds / (rra_step * base_step_seconds)
