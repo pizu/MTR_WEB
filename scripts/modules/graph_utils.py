@@ -341,15 +341,33 @@ def get_labels(ip: str,
 
 def get_available_hops(ip: str,
                        traceroute_dir: Optional[str] = None,
-                       settings: Optional[dict] = None) -> List[int]:
+                       settings: Optional[dict] = None,
+                       graph_dir: Optional[str] = None,
+                       **kwargs) -> List[int]:
     """
     Return hop indices available for a target (from stabilized file).
+
+    Parameters
+    ----------
+    ip : str
+        The target key (IP/hostname).
+    traceroute_dir : Optional[str]
+        Explicit directory to read from; if None, resolve via settings.
+    settings : Optional[dict]
+        Full YAML settings dict for path resolution.
+    graph_dir : Optional[str]
+        Ignored. Accepted for backward-compatibility with older html_generator.py.
+    **kwargs :
+        Ignored. Keeps the function tolerant to extra legacy keywords.
     """
+    # Prefer explicit dir if valid; otherwise obey settings['paths']['traceroute']
     if traceroute_dir and os.path.isdir(traceroute_dir):
         d = traceroute_dir
     else:
         d = resolve_all_paths(settings or {}).get("traceroute") or "traceroute"
+
     p_hops = os.path.join(d, f"{ip}_hops.json")
     data = _load_json(p_hops, [])
-    hops = {int(item["count"]) for item in data if isinstance(item, dict) and "count" in item}
+    hops = {int(item["count"]) for item in data
+            if isinstance(item, dict) and "count" in item}
     return sorted(hops)
