@@ -49,7 +49,9 @@ def _write_hops_json(stats, hops_path):
         if hop_int < 1:
             continue
 
-        items = [(k, s[k]) for k in s if isinstance(s.get(k), int) and k not in IGNORE_HOSTS]
+        RESERVED_KEYS = {"_order", "last", "wins"}
+        items = [(k, v) for k, v in s.items()
+         if isinstance(v, int) and k not in RESERVED_KEYS and k not in IGNORE_HOSTS]
         total = sum(c for _, c in items)
         if total == 0:
             continue
