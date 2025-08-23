@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 import os
 import json
-from modules.utils import resolve_all_paths
-
-UNSTABLE_THRESHOLD = 0.45
-TOPK_TO_SHOW       = 3
-MAJORITY_WINDOW    = 200
-STICKY_MIN_WINS    = 3
-IGNORE_HOSTS       = set()
-RESERVED_KEYS      = {"_order", "last", "wins"}
 
 def _strict_tr_dir(settings):
     d = (settings or {}).get("paths", {}).get("traceroute")
@@ -39,6 +31,11 @@ def _save_stats(p, stats):
         json.dump(stats, f, indent=2)
 
 def _write_hops_json(stats, hops_path):
+    UNSTABLE_THRESHOLD = 0.45
+    TOPK_TO_SHOW = 3
+    IGNORE_HOSTS = set()
+    RESERVED_KEYS = {"_order", "last", "wins"}
+
     labels = []
     for hop_str, s in sorted(stats.items(), key=lambda kv: int(kv[0])):
         try:
@@ -81,7 +78,7 @@ def update_hop_labels_only(ip, hops, settings, logger):
 def save_trace_and_json(ip, hops, settings, logger):
     p = _paths(ip, settings)
 
-    os.makedirs(os.path.dirname(p["txt"]), exist_ok=True)
+    # text
     with open(p["txt"], "w", encoding="utf-8") as f:
         for hop in hops:
             try:
@@ -96,6 +93,7 @@ def save_trace_and_json(ip, hops, settings, logger):
     if logger:
         logger.info(f"Saved traceroute to {p['txt']}")
 
+    # legacy map
     hop_map = {}
     for hop in hops:
         try:
@@ -110,4 +108,5 @@ def save_trace_and_json(ip, hops, settings, logger):
     if logger:
         logger.info(f"Saved hop label map to {p['json']}")
 
+    # rebuild stabilized labels from existing stats only
     update_hop_labels_only(ip, hops, settings, logger)
