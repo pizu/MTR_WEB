@@ -120,7 +120,9 @@ def _update_stats_with_snapshot(stats: dict, hops: List[dict]) -> dict:
                     break
 
         # compute dominant host
-        items = [(k, v) for k, v in s.items() if isinstance(v, int) and k not in IGNORE_HOSTS]
+        RESERVED_KEYS = {"_order", "last", "wins"}
+        items = [(k, v) for k, v in s.items()
+                 if isinstance(v, int) and k not in RESERVED_KEYS and k not in IGNORE_HOSTS]
         items.sort(key=lambda kv: -kv[1])
         if not items:
             continue
@@ -151,7 +153,9 @@ def _write_hops_json(stats: dict, p_hops: str) -> Tuple[List[dict], List[str]]:
     for hop_str in sorted(stats.keys(), key=lambda x: int(x)):
         s = stats[hop_str]
         # recent items sorted by counts
-        items = [(k, v) for k, v in s.items() if isinstance(v, int) and k not in IGNORE_HOSTS]
+        RESERVED_KEYS = {"_order", "last", "wins"}  # add at top-level once
+        items = [(k, v) for k, v in s.items() 
+                 if isinstance(v, int) and k not in RESERVED_KEYS and k not in IGNORE_HOSTS]
         items.sort(key=lambda kv: -kv[1])
         if not items:
             continue
