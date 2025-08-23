@@ -218,7 +218,7 @@ def _save_cache(cache_file: str, data: Dict[str, List[Dict[str, Any]]]) -> None:
         pass
 
 def _update_cache_with_current(
-    cache: Dict[str, List[Dict[str, Any]]]],
+    cache: Dict[str, List[Dict[str, Any]]],
     hops_legend: List[Tuple[int, str]],
     max_values_per_hop: int = 20
 ) -> Dict[str, bool]:
