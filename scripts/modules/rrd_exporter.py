@@ -353,7 +353,9 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         rows = rows[:n]
 
     # NOTE: time.time() (not time.now())
-    labels_hhmm = [_fmt_ts(ts) for ts in epochs]
+    #labels_hhmm = [_fmt_ts(ts) for ts in epochs]
+    labels_hhmm = [_fmt_ts(ts if step else int(time.time())) for ts in epochs]
+
 
     # Map DS names to columns
     name_to_idx = {name: i for i, name in enumerate(names or [])}
