@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-modules/rrd_exporter.py (STRICT PATHS)
+modules/rrd_exporter.py (STRICT TRACEROUTE PATH)
 
-Exports Chart.js‑friendly time‑series bundles and annotates hops with:
-- stable legend labels read from <traceroute>/<ip>_hops.json (produced by the writer)
-- varies/endpoints/changes derived from hop_ip_cache (under html/var)
+Exports Chart.js‑friendly JSON time‑series bundles and annotates each hop with:
+- stable legend label read from <traceroute>/<ip>_hops.json
+- varies/endpoints/changes derived from hop_ip_cache under <html>/var/hop_ip_cache
 
 STRICT POLICY:
-- Traceroute dir MUST come from settings['paths']['traceroute'].
-- No environment, no legacy keys, no defaults.
-- If missing/invalid: we log an error and export JSON without hop labels.
+- Traceroute dir MUST be settings['paths']['traceroute'] and MUST exist.
+- No environment/legacy/default fallbacks.
 """
 
 import os
@@ -24,6 +23,8 @@ from typing import Dict, List, Tuple, Any, Optional
 from modules.graph_utils import get_labels
 from modules.utils import resolve_html_dir, resolve_all_paths, setup_logger
 
+# ---------- small helpers ----------
+
 def _now_epoch() -> int:
     return int(time.time())
 
@@ -32,11 +33,6 @@ def _color(hop_index: int) -> str:
     g = int((1 + math.sin(hop_index * 0.3 + 2)) * 127)
     b = int((1 + math.sin(hop_index * 0.3 + 4)) * 127)
     return f"#{r:02x}{g:02x}{b:02x}"
-
-LABEL_ENDPOINT_RE = re.compile(r"^\s*\d+\s*:\s*([^\s]+)")
-def _extract_endpoint(label_text: str) -> str:
-    m = LABEL_ENDPOINT_RE.match(label_text or "")
-    return m.group(1) if m else (label_text or "")
 
 def _fmt_ts(epoch: int) -> str:
     try:
@@ -57,16 +53,23 @@ def _nan_to_none(v):
 def _ensure_dir(p: str):
     os.makedirs(os.path.dirname(p), exist_ok=True)
 
-# ---------- STRICT DIR HELPERS ----------
+# extract endpoint from legend "N: ip"
+LABEL_ENDPOINT_RE = re.compile(r"^\s*\d+\s*:\s*([^\s]+)")
+def _extract_endpoint(label_text: str) -> str:
+    m = LABEL_ENDPOINT_RE.match(label_text or "")
+    return m.group(1) if m else (label_text or "")
+
+# ---------- STRICT traceroute dir ----------
+
 def _strict_traceroute_dir(settings: dict, logger=None) -> Optional[str]:
-    """Only accept settings['paths']['traceroute']; no other fallbacks."""
-    cfg_paths = (settings or {}).get("paths", {}) or {}
-    d = cfg_paths.get("traceroute")
+    d = (settings or {}).get("paths", {}).get("traceroute")
     if not d or not os.path.isdir(d):
         if logger:
-            logger.error("Traceroute directory not set or not found in settings['paths']['traceroute'].")
+            logger.error("Traceroute directory missing or does not exist at settings['paths']['traceroute'].")
         return None
     return d
+
+# ---------- hop‑IP cache (with timestamps) ----------
 
 def _cache_dir(paths: Dict[str, str], html_dir: str) -> str:
     base = (paths or {}).get("cache")
@@ -149,8 +152,7 @@ def _update_cache_with_current(cache, hops_legend, max_values_per_hop: int = 20)
     return varies_flags
 
 def _clip_changes_to_window(changes, start_epoch: int, end_epoch: int):
-    if not isinstance(changes, list):
-        return []
+    if not isinstance(changes, list): return []
     out = []
     for rec in changes:
         try:
@@ -165,6 +167,8 @@ def _clip_changes_to_window(changes, start_epoch: int, end_epoch: int):
         except Exception:
             continue
     return out
+
+# ---------- export ----------
 
 def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, logger=None) -> str:
     logger = logger or setup_logger("rrd_exporter", settings=settings)
