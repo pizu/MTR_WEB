@@ -8,27 +8,22 @@ Shared utilities for the MTR_WEB project.
 
 Key responsibilities
 --------------------
-- Settings loading (YAML) and normalization.
-- Strict directory resolution:
-    * html/graphs/logs/cache are safe to create.
-    * rrd and traceroute are inputs; we do NOT auto-create them.
-    * traceroute is STRICTLY taken from YAML (no env or legacy fallbacks).
-- Logger setup with rotating file handler + console.
-- Live refresh of logger levels from YAML (refresh_logger_levels).
-- HTML/graph helpers:
-    * get_html_ranges(settings) -> sanitized time range list for UI/exports.
-    * resolve_canvas(settings)  -> convenience bundle the UI/readers can use.
+- Load and normalize YAML settings.
+- Resolve all key directories with a STRICT policy for the traceroute path
+  (YAML only; no environment or legacy fallbacks; do not auto-create).
+- Provide logging helpers (rotating file + console), with a live-level refresher.
+- Provide HTML/graph helpers for time ranges and a convenience "canvas" bundle.
+- Provide targets file resolution for exporters/controllers.
 
-YAML expectations (minimum)
----------------------------
+Minimum expected YAML
+---------------------
 paths:
   rrd: /opt/scripts/MTR_WEB/data
   graphs: /opt/scripts/MTR_WEB/html/graphs
   html: /opt/scripts/MTR_WEB/html
   logs: /opt/scripts/MTR_WEB/logs
   traceroute: /opt/scripts/MTR_WEB/traceroute
-  # Optional:
-  # cache: /opt/scripts/MTR_WEB/html/var/hop_ip_cache
+  # cache (optional): /opt/scripts/MTR_WEB/html/var/hop_ip_cache
 
 graph_time_ranges:
   - label: "15m"
@@ -52,8 +47,6 @@ from __future__ import annotations
 import os
 import sys
 import yaml
-import json
-import time
 import logging
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Any, Optional, List
@@ -64,14 +57,14 @@ from typing import Dict, Any, Optional, List
 # -----------------------------------------------------------------------------
 
 def _expand(path: Optional[str]) -> Optional[str]:
-    """Expand ~ and environment variables; return absolute path or None."""
+    """Expand ~ and env vars; return absolute path or None."""
     if not path:
         return None
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
 def _mkdir_p(path: Optional[str]) -> None:
-    """Create a directory (and parents) if it doesn't exist. No error if it does."""
+    """Create a directory (and parents) if missing. No error if it exists."""
     if not path:
         return
     os.makedirs(path, exist_ok=True)
@@ -90,14 +83,11 @@ def _read_yaml(fp: str) -> Dict[str, Any]:
 
 def load_settings(path: str) -> Dict[str, Any]:
     """
-    Load YAML settings from 'path' and normalize the structure.
+    Load YAML settings from 'path', expand known path keys, and attach metadata.
 
-    - Ensures top-level keys exist: 'paths', 'logging_levels'.
-    - Expands ~ and environment variables for known path keys.
-
-    Raises
-    ------
-    FileNotFoundError if the file is not found.
+    Attaches:
+      settings['_meta']['settings_path'] : absolute path to the YAML file
+      settings['_meta']['settings_dir']  : parent directory of the YAML file
     """
     path = _expand(path) or path
     if not path or not os.path.isfile(path):
@@ -107,7 +97,12 @@ def load_settings(path: str) -> Dict[str, Any]:
     data.setdefault("paths", {})
     data.setdefault("logging_levels", {})
 
-    # Normalize/expand paths
+    # Attach metadata for later relative path resolution
+    data.setdefault("_meta", {})
+    data["_meta"]["settings_path"] = path
+    data["_meta"]["settings_dir"] = os.path.dirname(path)
+
+    # Normalize/expand path fields
     p = data["paths"]
     for k in ("rrd", "graphs", "html", "logs", "traceroute", "cache"):
         if k in p:
@@ -118,9 +113,8 @@ def load_settings(path: str) -> Dict[str, Any]:
 
 def resolve_html_dir(settings: Dict[str, Any]) -> str:
     """
-    Return the HTML output directory from settings; create it if missing.
-
-    If paths.html is missing, default to "./html" (created).
+    Return the HTML output directory; create it if missing.
+    If paths.html is missing, default to ./html (created).
     """
     html_dir = settings.get("paths", {}).get("html") or _expand("./html")
     _mkdir_p(html_dir)
@@ -129,19 +123,24 @@ def resolve_html_dir(settings: Dict[str, Any]) -> str:
 
 def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """
-    Resolve all important directories. STRICT policy for traceroute:
-    - Only settings['paths']['traceroute'] is accepted.
-    - If missing or not a directory, we return None (and log if a logger exists).
+    Resolve all important directories.
 
-    Returns a dict:
-      rrd         : str|None (input; not created)
-      graphs      : str      (created if needed)
-      html        : str      (created if needed)
-      logs        : str      (created if needed)
-      traceroute  : str|None (input; not created)
-      cache       : str      (created if needed; default <html>/var/hop_ip_cache)
+    STRICT traceroute policy:
+      - Accept ONLY settings['paths']['traceroute'].
+      - Do NOT auto-create it.
+      - If missing or not a directory, return None (consumers must handle this).
+
+    Returns:
+      {
+        "rrd":        str|None,   # input; not created
+        "graphs":     str,        # created if needed
+        "html":       str,        # created if needed
+        "logs":       str,        # created if needed
+        "traceroute": str|None,   # input; not created
+        "cache":      str,        # created if needed (defaults under html)
+      }
     """
-    paths_cfg = settings.get("paths", {})
+    paths_cfg = settings.get("paths", {}) or {}
 
     # html/logs/graphs: safe to create
     html_dir = paths_cfg.get("html") or _expand("./html")
@@ -157,17 +156,18 @@ def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, Optional[str]]:
     cache_dir = paths_cfg.get("cache") or os.path.join(html_dir, "var", "hop_ip_cache")
     _mkdir_p(cache_dir)
 
-    # rrd: input; don't create
+    # rrd: input; do not create
     rrd_dir = paths_cfg.get("rrd")
     if rrd_dir:
         rrd_dir = _expand(rrd_dir)
 
-    # traceroute: STRICT YAML only; do not create
+    # traceroute: STRICT YAML only; do NOT create
     tr_yaml = paths_cfg.get("traceroute")
     traceroute_dir = _expand(tr_yaml) if tr_yaml else None
     if traceroute_dir and not os.path.isdir(traceroute_dir):
         traceroute_dir = None
 
+    # Optional lightweight logging if a handler exists
     log = logging.getLogger("paths")
     if log.handlers:
         if traceroute_dir:
@@ -189,32 +189,55 @@ def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, Optional[str]]:
 
 
 # -----------------------------------------------------------------------------
+# Targets file helper
+# -----------------------------------------------------------------------------
+
+def resolve_targets_path(settings: Dict[str, Any]) -> str:
+    """
+    Return the absolute path to the targets YAML file.
+
+    Order of resolution:
+      1) settings['files']['targets'] (relative to the settings file if not absolute)
+      2) 'mtr_targets.yaml' next to the settings file
+      3) 'mtr_targets.yaml' in the current working directory
+    """
+    files = settings.get("files", {}) or {}
+
+    p = files.get("targets")
+    if p:
+        if not os.path.isabs(p):
+            base = settings.get("_meta", {}).get("settings_dir") or os.getcwd()
+            p = os.path.join(base, p)
+        return os.path.abspath(p)
+
+    base = settings.get("_meta", {}).get("settings_dir") or os.getcwd()
+    cand = os.path.join(base, "mtr_targets.yaml")
+    if os.path.isfile(cand):
+        return os.path.abspath(cand)
+
+    return os.path.abspath("mtr_targets.yaml")
+
+
+# -----------------------------------------------------------------------------
 # HTML / Graph helpers
 # -----------------------------------------------------------------------------
 
 def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
     """
-    Return a sanitized list of time ranges for the UI/exports.
+    Return a sanitized, sorted list of time ranges for UI/exports.
 
-    Input is expected under settings['graph_time_ranges'] as a list of dicts:
-      - label (str)
-      - seconds (int > 0)
+    Accepts either:
+      - list of dicts: [{"label":"1h","seconds":3600}, ...]
+      - mapping: {"1h": 3600, "24h": 86400}
+      - fallback strings "label:seconds" (e.g., "1h:3600")
 
-    We:
-      - coerce/validate types,
-      - drop invalid/duplicate labels (first wins),
-      - sort by 'seconds' ascending.
-
-    Example output:
-      [{"label": "15m", "seconds": 900}, {"label": "1h", "seconds": 3600}, ...]
+    De-duplicates by label (first wins) and sorts ascending by seconds.
     """
     raw = settings.get("graph_time_ranges") or []
     out: List[Dict[str, int]] = []
     seen = set()
 
-    # Robust parsing
     if isinstance(raw, dict):
-        # handle mapping forms like {"15m": 900, "1h": 3600}
         for k, v in raw.items():
             label = str(k).strip()
             try:
@@ -235,28 +258,26 @@ def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
                     seconds = int(row.get("seconds"))
                 except Exception:
                     seconds = None
-            elif isinstance(row, str):
-                # Accept "label:seconds" strings as a fallback (e.g., "1h:3600")
-                parts = row.split(":")
-                if len(parts) == 2:
-                    label = parts[0].strip()
-                    try:
-                        seconds = int(parts[1].strip())
-                    except Exception:
-                        seconds = None
+            elif isinstance(row, str) and ":" in row:
+                a, b = row.split(":", 1)
+                label = a.strip()
+                try:
+                    seconds = int(b.strip())
+                except Exception:
+                    seconds = None
+
             if not label or not seconds or seconds <= 0 or label in seen:
                 continue
             seen.add(label)
             out.append({"label": label, "seconds": seconds})
 
-    # Sort by seconds (ascending)
     out.sort(key=lambda r: r["seconds"])
     return out
 
 
 def resolve_canvas(settings: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Convenience bundle for HTML/graph modules (e.g., graph_config.py).
+    Convenience bundle for HTML/graph modules.
     Returns:
       {
         "html_dir":   <paths.html>,
@@ -309,7 +330,7 @@ def setup_logger(
     if logger.handlers:
         return logger
 
-    # Decide level from YAML logging_levels (or default INFO)
+    # Compute base level from YAML logging_levels (or default INFO)
     default_level = logging.INFO
     if settings:
         levels = settings.get("logging_levels", {}) or {}
@@ -320,7 +341,7 @@ def setup_logger(
         default_level = _level_from_name(level_override, default_level)
 
     logger.setLevel(default_level)
-    logger.propagate = False  # don't duplicate to root
+    logger.propagate = False  # do not duplicate to root
 
     # Formatter (timestamps + level + message)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
