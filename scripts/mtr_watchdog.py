@@ -8,31 +8,34 @@ Role
 ----
 Watchdog/launcher for MTR monitors.
 
-Two modes:
+Operating modes
+---------------
 1) Per-target mode (controller launches many):
-   $ mtr_watchdog.py --target 8.8.8.8 --settings mtr_script_settings.yaml
+   $ mtr_watchdog.py --target 8.8.8.8 --settings mtr_script_settings.yaml [--entry modules.mtr_runner:monitor_target]
    - DOES NOT take the writer lock by default (prevents restart storms).
-   - Use --writer if you explicitly want THIS instance to be the single writer.
+   - Use --writer if you explicitly want THIS process to be the single traceroute writer.
 
 2) Aggregate mode (single process spawns workers itself):
    $ mtr_watchdog.py --settings mtr_script_settings.yaml
    - Spawns a worker per active target from mtr_targets.yaml.
-   - Takes the writer lock (single writer).
+   - Takes the writer lock (single writer) unless you pass --no-spawn without --writer.
 
-You can also use:
+3) Lock-holder only (no workers; for environments that launch workers elsewhere):
    $ mtr_watchdog.py --settings mtr_script_settings.yaml --no-spawn --writer
-   - Single process that ONLY holds the writer lock (no workers).
-   - Useful if your monitors are launched elsewhere but you still want one writer.
 
 Writer lock
 -----------
 - The traceroute writer lock lives at <paths.traceroute>/.writer.lock.
 - Only the process that passes --writer will attempt to acquire it.
 
+Entrypoint
+----------
+- The monitor callable is discovered automatically as `monitor_target` in common modules.
+- You can force it with --entry 'module:function' to avoid import guessing.
+
 Signals
 -------
 - SIGINT/SIGTERM trigger graceful shutdown.
-
 """
 
 from __future__ import annotations
@@ -50,7 +53,7 @@ from modules.utils import load_settings, resolve_all_paths, setup_logger
 
 
 # -----------------------------------------------------------------------------
-# Single-writer file lock (local class)
+# Single-writer file lock
 # -----------------------------------------------------------------------------
 
 class SingleWriterLock:
@@ -81,7 +84,7 @@ class SingleWriterLock:
 
 
 # -----------------------------------------------------------------------------
-# Targets loader (robust)
+# Targets loader
 # -----------------------------------------------------------------------------
 
 def _load_targets(settings: Dict[str, Any], logger) -> List[Dict[str, Any]]:
@@ -132,11 +135,27 @@ def _load_targets(settings: Dict[str, Any], logger) -> List[Dict[str, Any]]:
 # Monitor entrypoint import
 # -----------------------------------------------------------------------------
 
-def _import_monitor(logger) -> Optional[Callable]:
+def _import_monitor(logger, forced: Optional[str] = None) -> Optional[Callable]:
     """
-    Try a set of known locations for `monitor_target`.
-    Adjust as needed for your codebase.
+    Import the monitor entrypoint.
+
+    If 'forced' is provided as 'module:function', import exactly that.
+    Otherwise, try common candidates that expose monitor_target(ip, settings=...).
     """
+    if forced:
+        try:
+            mod_name, func_name = forced.split(":")
+            mod = importlib.import_module(mod_name)
+            fn = getattr(mod, func_name, None)
+            if callable(fn):
+                logger.info(f"Using monitor entrypoint (forced): {forced}")
+                return fn
+            logger.error(f"Entrypoint not callable: {forced}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to import forced entrypoint {forced}: {e}")
+            return None
+
     candidates = [
         "modules.monitor:monitor_target",
         "modules.mtr_monitor:monitor_target",
@@ -203,6 +222,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--settings", default="mtr_script_settings.yaml",
                         help="Path to YAML settings (default: mtr_script_settings.yaml)")
     parser.add_argument("--target", help="Run a single per-target worker (IP or hostname).")
+    parser.add_argument("--entry",
+                        help="Explicit monitor entrypoint as 'module:function', "
+                             "e.g. modules.mtr_runner:monitor_target")
     parser.add_argument("--writer", action="store_true",
                         help="Attempt to acquire the traceroute writer lock in this process.")
     parser.add_argument("--no-spawn", action="store_true",
@@ -243,31 +265,30 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Per-target mode: controller runs many instances with --target
     if args.target:
-        entrypoint = _import_monitor(logger)
+        entrypoint = _import_monitor(logger, args.entry)
         if not entrypoint:
+            # On failure, return rc=3 so the controller can handle it
+            if writer_lock:
+                try: writer_lock.release()
+                except Exception: pass
             return 3
         entry_path = f"{entrypoint.__module__}:{entrypoint.__name__}"
 
         # Run worker in-foreground (no extra process), so controller gets the exit code
         _worker_wrapper(args.target, settings, entry_path)
 
-        # Release lock if we were the writer
         if writer_lock:
-            try:
-                writer_lock.release()
-            except Exception:
-                pass
+            try: writer_lock.release()
+            except Exception: pass
         return 0
 
     # Aggregate mode: spawn workers unless --no-spawn
     if not args.no_spawn:
-        entrypoint = _import_monitor(logger)
+        entrypoint = _import_monitor(logger, args.entry)
         if not entrypoint:
             if writer_lock:
-                try:
-                    writer_lock.release()
-                except Exception:
-                    pass
+                try: writer_lock.release()
+                except Exception: pass
             return 3
         entry_path = f"{entrypoint.__module__}:{entrypoint.__name__}"
 
@@ -306,10 +327,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Release writer lock (if held)
     if writer_lock:
-        try:
-            writer_lock.release()
-        except Exception:
-            pass
+        try: writer_lock.release()
+        except Exception: pass
         logger.info("Writer lock released.")
 
     return 0
