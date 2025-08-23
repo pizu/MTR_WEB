@@ -1,38 +1,85 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 modules/monitor.py
+==================
 
 Monitors one target IP/host in a loop:
-  1) Run MTR snapshot (via modules.mtr_runner.run_mtr)
-  2) Detect hop-path changes + loss changes
-  3) Update RRDs every iteration (single multi-hop file only)
-  4) Maintain rolling hop label stats (drives "varies (...)" labels)
-  5) Save traceroute JSON when something changed
-  6) Hot-reload mtr_script_settings.yaml (interval, rules, labels, etc.) without restart
+
+  1) Run an MTR snapshot (modules.mtr_runner.run_mtr).
+  2) Detect hop-path or loss changes for logging/severity.
+  3) Update the single multi-hop RRD file (<paths.rrd>/<ip>.rrd).
+  4) Maintain rolling hop-label stats that drive "varies (...)" decisions.
+  5) Persist traceroute artifacts (strictly under YAML paths.traceroute) via modules.graph_utils.
+  6) Hot-reload mtr_script_settings.yaml without restart, and refresh logger levels.
+
+Key design choices
+------------------
+- Strict traceroute path: read/write ONLY under settings['paths']['traceroute'].
+  The writer is centralized in modules.graph_utils.* functions.
+- Canonical entrypoint signature: monitor_target(ip, settings=None, **kwargs)
+  Compatible with the watchdog calling convention. 'source_ip' and 'logger'
+  can be passed through kwargs if desired.
+
+Inputs
+------
+- ip (str):      Target IP/host.
+- settings (dict): YAML settings loaded by modules.utils.load_settings(..).
+                   The dict should include settings['_meta']['settings_path'].
+- kwargs:
+    - source_ip (optional):  Source address for MTR runner.
+    - logger (optional):     logging.Logger to reuse; created if not supplied.
+
+Outputs
+-------
+- Updates <paths.rrd>/<ip>.rrd each iteration.
+- Writes/updates:
+    <paths.traceroute>/<ip>_hops_stats.json
+    <paths.traceroute>/<ip>_hops.json
+    <paths.traceroute>/<ip>.trace.txt
+    <paths.traceroute>/<ip>.json
+
+Dependencies
+------------
+- modules.mtr_runner.run_mtr
+- modules.rrd_handler.init_rrd / update_rrd
+- modules.severity.evaluate_severity_rules / hops_changed
+- modules.graph_utils.save_trace_and_json / update_hop_labels_only
+- modules.utils.load_settings / resolve_all_paths / setup_logger / refresh_logger_levels
+
 """
+
+from __future__ import annotations
 
 import os
 import json
 import time
 from typing import Optional, Dict, Any, List
-from datetime import datetime
 
 from deepdiff import DeepDiff
 
 from modules.mtr_runner import run_mtr
-from modules.rrd_handler import init_rrd, update_rrd          # per-hop creation removed
+from modules.rrd_handler import init_rrd, update_rrd
 from modules.severity import evaluate_severity_rules, hops_changed
-from modules.trace_exporter import save_trace_and_json, update_hop_labels_only
-from modules.utils import load_settings, refresh_logger_levels
+from modules.graph_utils import save_trace_and_json, update_hop_labels_only
+from modules.utils import load_settings, resolve_all_paths, setup_logger, refresh_logger_levels
 
-# --- Default label tunables (YAML can override these at runtime) ---
-UNSTABLE_THRESHOLD = 0.45   # top share < threshold and competition -> "varies (...)"
+
+# ---------------------------------------------------------------------------
+# Label tunables (can be overridden by YAML at runtime)
+# ---------------------------------------------------------------------------
+
+UNSTABLE_THRESHOLD = 0.45   # if top share < threshold and competition exists => "varies (...)"
 TOPK_TO_SHOW       = 3
 MAJORITY_WINDOW    = 200
 STICKY_MIN_WINS    = 3
-IGNORE_HOSTS       = set()
+IGNORE_HOSTS       = set()  # hosts to ignore in label tallies (optional)
 
-# ---------------- YAML-driven label config helper ----------------
+
+# ---------------------------------------------------------------------------
+# YAML-driven label config helper
+# ---------------------------------------------------------------------------
+
 def _label_cfg(settings: dict) -> dict:
     labels = settings.get("labels") or {}
     return {
@@ -43,25 +90,44 @@ def _label_cfg(settings: dict) -> dict:
         "sticky_min_wins":    int(labels.get("sticky_min_wins",    STICKY_MIN_WINS)),
     }
 
-# ---------------- Helpers for label/traceroute files ----------------
-def _label_paths(ip: str, settings: dict):
-    trace_dir = settings.get("traceroute_directory", "traceroute")
-    os.makedirs(trace_dir, exist_ok=True)
-    stem = os.path.join(trace_dir, ip)
+
+# ---------------------------------------------------------------------------
+# Traceroute/label file paths (strictly under YAML paths.traceroute)
+# ---------------------------------------------------------------------------
+
+def _label_paths(ip: str, settings: dict) -> tuple[str, str]:
+    """
+    Return (stats_path, hops_json_path) under the STRICT traceroute directory.
+
+    The traceroute directory is resolved via resolve_all_paths(settings)['traceroute'].
+    The directory is created if missing (writer-only logic).
+    """
+    paths = resolve_all_paths(settings)
+    tr_dir = paths.get("traceroute")
+    if not tr_dir:
+        raise RuntimeError("settings.paths.traceroute missing or not a directory (cannot write traceroute artifacts)")
+    os.makedirs(tr_dir, exist_ok=True)
+    stem = os.path.join(tr_dir, ip)
     return stem + "_hops_stats.json", stem + "_hops.json"
+
 
 def _load_stats(stats_path: str) -> dict:
     try:
         with open(stats_path, encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f) or {}
     except Exception:
         return {}
+
 
 def _save_stats(stats_path: str, stats: dict) -> None:
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
 
-# ---------------- Stats maintenance ----------------
+
+# ---------------------------------------------------------------------------
+# Stats maintenance (rolling counts, decay, sticky modal logic)
+# ---------------------------------------------------------------------------
+
 def _update_stats_with_snapshot(
     stats: dict,
     hops: list,
@@ -69,7 +135,6 @@ def _update_stats_with_snapshot(
     sticky_min_wins: int,
     logger=None
 ) -> dict:
-    # (unchanged) — keeps hop>=1, rolling counts, decay, sticky modal logic
     for h in hops:
         raw = h.get("count", 0)
         try:
@@ -94,6 +159,7 @@ def _update_stats_with_snapshot(
 
         total_counts = sum(v for k, v in s.items() if isinstance(s.get(k), int))
         if total_counts > majority_window:
+            # simple decay: remove one count from the tail-most item
             for key in list(s["_order"])[::-1]:
                 if isinstance(s.get(key), int) and s[key] > 0:
                     s[key] -= 1
@@ -102,6 +168,7 @@ def _update_stats_with_snapshot(
                         s["_order"] = [x for x in s["_order"] if x != key]
                     break
 
+        # sticky modal
         modal = max((k for k in s if isinstance(s.get(k), int)), key=lambda k: s[k], default=None)
         cur = s.get("last")
         if cur is None:
@@ -117,7 +184,11 @@ def _update_stats_with_snapshot(
 
     return stats
 
-# ---------------- Path-change stat hygiene ----------------
+
+# ---------------------------------------------------------------------------
+# Path-change hygiene (reset/realign policies)
+# ---------------------------------------------------------------------------
+
 def _first_diff_index(prev_hops: list, curr_hops: list) -> Optional[int]:
     n = min(len(prev_hops), len(curr_hops))
     for i in range(n):
@@ -127,12 +198,14 @@ def _first_diff_index(prev_hops: list, curr_hops: list) -> Optional[int]:
         return n + 1
     return None
 
+
 def _reset_stats_from(stats: dict, start_hop_int: int, logger=None) -> None:
     to_del = [k for k in stats.keys() if k.isdigit() and int(k) >= start_hop_int]
     for k in to_del:
         stats.pop(k, None)
     if logger:
-        logger.debug(f"[labels] reset stats from hop {start_hop_int} (inclusive); removed {len(to_del)} entries")
+        logger.debug(f"[labels] reset stats from hop {start_hop_int} (inclusive); removed {len(to_del)} entries)")
+
 
 def _realign_then_reset(stats: dict, prev_hops: list, curr_hops: list, logger=None) -> None:
     modal_to_oldidx = {}
@@ -181,6 +254,7 @@ def _realign_then_reset(stats: dict, prev_hops: list, curr_hops: list, logger=No
     if logger:
         logger.debug(f"[labels] realign_then_reset moved {moved} buckets; now {len(stats)} buckets total")
 
+
 def _apply_reset_policy(stats: dict, prev_hops: list, curr_hops: list, reset_mode: str, logger=None) -> None:
     first_diff = _first_diff_index(prev_hops, curr_hops)
     if first_diff is None:
@@ -197,9 +271,13 @@ def _apply_reset_policy(stats: dict, prev_hops: list, curr_hops: list, reset_mod
     if reset_mode == "realign_then_reset":
         _realign_then_reset(stats, prev_hops, curr_hops, logger=logger)
         return
-    _reset_stats_from(stats, first_diff, logger=logger)
+    _reset_stats_from(stats, first_diff, logger=logger)  # default: from_first_diff
 
-# ---------------- Label decision (writes <ip>_hops.json used by Chart.js) ----------------
+
+# ---------------------------------------------------------------------------
+# Decide labels per hop and persist <ip>_hops.json
+# ---------------------------------------------------------------------------
+
 def _decide_label_per_hop(
     stats: dict,
     hops_json_path: str,
@@ -209,6 +287,7 @@ def _decide_label_per_hop(
 ) -> dict:
     labels = {}
     out = []
+
     for hop_str, s in sorted(stats.items(), key=lambda x: int(x[0])):
         hop_int = int(hop_str)
         if hop_int < 1:
@@ -240,101 +319,120 @@ def _decide_label_per_hop(
     if out:
         with open(hops_json_path, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
+
     return labels
 
-# ---------------- Settings hot-reload support ----------------
-def _resolve_settings_path(settings: dict) -> str:
-    injected = settings.get("_settings_path")
-    if isinstance(injected, str) and os.path.isfile(injected):
-        return injected
-    modules_dir = os.path.abspath(os.path.dirname(__file__))         # .../scripts/modules
+
+# ---------------------------------------------------------------------------
+# Settings path helpers (for hot-reload)
+# ---------------------------------------------------------------------------
+
+def _settings_path_from_settings(settings: dict) -> Optional[str]:
+    meta = settings.get("_meta") or {}
+    sp = meta.get("settings_path")
+    if isinstance(sp, str) and os.path.isfile(sp):
+        return sp
+    # Fallback: assume repo root has mtr_script_settings.yaml
+    modules_dir = os.path.abspath(os.path.dirname(__file__))           # .../scripts/modules
     scripts_dir = os.path.abspath(os.path.join(modules_dir, os.pardir))
     repo_root   = os.path.abspath(os.path.join(scripts_dir, os.pardir))
-    return os.path.join(repo_root, "mtr_script_settings.yaml")
+    fallback = os.path.join(repo_root, "mtr_script_settings.yaml")
+    return fallback if os.path.isfile(fallback) else None
 
-def _safe_mtime(path: str) -> float:
+
+def _safe_mtime(path: Optional[str]) -> float:
+    if not path:
+        return 0.0
     try:
         return os.path.getmtime(path)
     except Exception:
         return 0.0
 
-# ---------------- Main monitor entrypoint ----------------
-def monitor_target(ip, source_ip, settings, logger):
-    """
-    Monitor loop for a single target.
-    - ip:        destination IP/host
-    - source_ip: optional source IP (passed to MTR)
-    - settings:  dict loaded from YAML (will be hot-reloaded)
-    - logger:    logging.Logger provided by watchdog
-    """
 
-    # --- Resolve settings file for hot-reload and track mtime ---
-    SETTINGS_FILE = _resolve_settings_path(settings)
+# ---------------------------------------------------------------------------
+# Main monitor entrypoint
+# ---------------------------------------------------------------------------
+
+def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
+    """
+    Canonical entrypoint used by the watchdog/controller.
+
+    Parameters
+    ----------
+    ip : str
+        Destination IP/host to monitor.
+    settings : dict | None
+        Settings dict loaded via modules.utils.load_settings(...).
+    kwargs :
+        source_ip (optional): passed through to run_mtr(..).
+        logger    (optional): logging.Logger to use; created if not provided.
+    """
+    if settings is None:
+        raise RuntimeError("monitor_target requires a 'settings' dict")
+
+    # Optional extras
+    source_ip = kwargs.get("source_ip")
+    logger = kwargs.get("logger") or setup_logger(ip, settings=settings)
+
+    # Resolve paths and ensure RRD directory exists (writer updates it)
+    paths = resolve_all_paths(settings)
+    rrd_dir = paths.get("rrd") or "data"
+    os.makedirs(rrd_dir, exist_ok=True)
+    rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
+
+    # Hot-reload state
+    SETTINGS_FILE = _settings_path_from_settings(settings)
     last_settings_mtime = _safe_mtime(SETTINGS_FILE)
 
-    # --- Initial settings consumption ---
-    rrd_dir        = settings.get("rrd_directory", "data")
+    # Initial settings consumption
+    label_knobs = _label_cfg(settings)
     interval       = int(settings.get("interval_seconds", 60))
     severity_rules = settings.get("log_severity_rules", [])
+    debug_rrd_log  = bool(settings.get("rrd", {}).get("debug_values", False))
 
-    # Single multi-hop RRD path
-    os.makedirs(rrd_dir, exist_ok=True)
-    rrd_path      = os.path.join(rrd_dir, f"{ip}.rrd")
-
-    # Debugging
-    debug_rrd_log = bool(settings.get("rrd", {}).get("debug_values", False))
-
-    # Ensure the multi-hop RRD exists (per-hop creation removed)
+    # Ensure the multi-hop RRD exists
     init_rrd(rrd_path, settings, logger)
 
     prev_hops: List[Dict[str, Any]] = []
     prev_loss_state: Dict[int, float] = {}
 
-    logger.info(f"[{ip}] Monitoring loop started — running MTR snapshots (interval={interval}s)")
+    logger.info(f"[{ip}] Monitoring loop started — interval={interval}s")
 
     while True:
-        # --- Hot reload of settings on file change ---
+        # ---------- Hot reload ----------
         curr_mtime = _safe_mtime(SETTINGS_FILE)
-        if curr_mtime != last_settings_mtime and curr_mtime > 0:
+        if SETTINGS_FILE and curr_mtime > 0 and curr_mtime != last_settings_mtime:
             try:
-              settings = load_settings(SETTINGS_FILE)
-              refresh_logger_levels(logger, "mtr_watchdog", settings)
-              rrd_dir        = settings.get("rrd_directory", rrd_dir)
-              interval       = int(settings.get("interval_seconds", interval))
-              severity_rules = settings.get("log_severity_rules", severity_rules)
-              os.makedirs(rrd_dir, exist_ok=True)
-              rrd_path      = os.path.join(rrd_dir, f"{ip}.rrd")
-              debug_rrd_log = bool(settings.get("rrd", {}).get("debug_values", False))
-              last_settings_mtime = curr_mtime
-              logger.info(f"[{ip}] Settings reloaded. interval={interval}s, rrd_dir={rrd_dir}")
-            except Exception as e:
-              logger.error(f"[{ip}] Failed to hot-reload settings: {e}")
+                settings = load_settings(SETTINGS_FILE)
+                refresh_logger_levels(settings)  # sync live logger levels
 
-        # --- Run one MTR snapshot ---
+                # Re-resolve paths (rrd may change)
+                paths = resolve_all_paths(settings)
+                rrd_dir = paths.get("rrd") or rrd_dir
+                os.makedirs(rrd_dir, exist_ok=True)
+                rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
+
+                # Refresh knobs
+                label_knobs   = _label_cfg(settings)
+                interval      = int(settings.get("interval_seconds", interval))
+                severity_rules = settings.get("log_severity_rules", severity_rules)
+                debug_rrd_log = bool(settings.get("rrd", {}).get("debug_values", debug_rrd_log))
+
+                last_settings_mtime = curr_mtime
+                logger.info(f"[{ip}] Settings reloaded. interval={interval}s, rrd_dir={rrd_dir}")
+            except Exception as e:
+                logger.error(f"[{ip}] Failed to hot-reload settings: {e}")
+
+        # ---------- One MTR snapshot ----------
         hops = run_mtr(ip, source_ip, logger, settings=settings)
         if not hops:
-            logger.warning(f"[{ip}] MTR returned no data — target unreachable or command failed")
+            logger.warning(f"[{ip}] MTR returned no data — unreachable/command failed")
             time.sleep(interval)
             continue
 
         hop_path_changed = hops_changed(prev_hops, hops)
 
-        # --- Label knobs from YAML each loop ---
-        label_knobs = _label_cfg(settings)
-        unstable_threshold = label_knobs["unstable_threshold"]
-        topk_to_show       = label_knobs["topk_to_show"]
-        majority_window    = label_knobs["majority_window"]
-        sticky_min_wins    = label_knobs["sticky_min_wins"]
-        reset_mode         = label_knobs["reset_mode"]
-        logger.debug(
-            f"[labels cfg] reset_mode={reset_mode} "
-            f"unstable_threshold={unstable_threshold} "
-            f"topk_to_show={topk_to_show} "
-            f"majority_window={majority_window} "
-            f"sticky_min_wins={sticky_min_wins}"
-        )
-
-        # --- Loss tracking per hop (ignore hop < 1) ---
+        # ---------- Loss tracking per hop (hop >= 1) ----------
         curr_loss_state: Dict[int, float] = {}
         for h in hops:
             try:
@@ -344,17 +442,18 @@ def monitor_target(ip, source_ip, settings, logger):
             if hop_num < 1:
                 continue
             loss = h.get("Loss%", 0.0)
-            if loss is not None:
-                try:
-                    lf = float(loss)
-                except (TypeError, ValueError):
-                    lf = 0.0
-                if lf > 0.0:
-                    curr_loss_state[hop_num] = round(lf, 2)
+            if loss is None:
+                continue
+            try:
+                lf = float(loss)
+            except (TypeError, ValueError):
+                lf = 0.0
+            if lf > 0.0:
+                curr_loss_state[hop_num] = round(lf, 2)
 
         loss_changed = (curr_loss_state != prev_loss_state)
 
-        # --- Hop path change logging with severity evaluation ---
+        # ---------- Path-change logging with severity ----------
         if hop_path_changed:
             diff = DeepDiff([h.get("host") for h in prev_hops],
                             [h.get("host") for h in hops],
@@ -371,7 +470,7 @@ def monitor_target(ip, source_ip, settings, logger):
                 msg = f"[{ip}] Hop {hop_index} changed from {value.get('old_value')} to {value.get('new_value')}"
                 log_fn(f"[{tag}] {msg}" if tag else msg)
 
-        # --- Loss change logging with severity evaluation ---
+        # ---------- Loss-change logging with severity ----------
         if loss_changed:
             for hop_num, loss in curr_loss_state.items():
                 context = {
@@ -385,17 +484,23 @@ def monitor_target(ip, source_ip, settings, logger):
                 msg = f"[{ip}] Loss at hop {hop_num}: {loss}% (prev: {context['prev_loss']}%)"
                 log_fn(f"[{tag}] {msg}" if tag else msg)
 
-        # ---- Update the multi-hop RRD every iteration ----
+        # ---------- Update multi-hop RRD ----------
         update_rrd(rrd_path, hops, ip, settings, debug_rrd_log, logger=logger)
 
-        # ---- Labels: realign/reset BEFORE adding this snapshot ----
+        # ---------- Labels: apply reset policy BEFORE adding this snapshot ----------
         stats_path, hops_json_path = _label_paths(ip, settings)
         stats = _load_stats(stats_path)
+
+        reset_mode         = label_knobs["reset_mode"]
+        unstable_threshold = label_knobs["unstable_threshold"]
+        topk_to_show       = label_knobs["topk_to_show"]
+        majority_window    = label_knobs["majority_window"]
+        sticky_min_wins    = label_knobs["sticky_min_wins"]
 
         if hop_path_changed:
             _apply_reset_policy(stats, prev_hops, hops, reset_mode, logger=logger)
 
-        # Update stats with current snapshot (hop>=1 only)
+        # Update stats with the current snapshot (hop >= 1 only)
         stats = _update_stats_with_snapshot(
             stats,
             hops,
@@ -405,7 +510,7 @@ def monitor_target(ip, source_ip, settings, logger):
         )
         _save_stats(stats_path, stats)
 
-        # Decide labels from the freshly updated stats, write <ip>_hops.json
+        # Decide labels, write <ip>_hops.json (consumed by rrd_exporter/html)
         _decide_label_per_hop(
             stats,
             hops_json_path,
@@ -414,11 +519,9 @@ def monitor_target(ip, source_ip, settings, logger):
             logger=logger
         )
 
-        # Apply labels downstream (idempotent; used by HTML/Chart.js)
+        # Synchronize labels + write traceroute artifacts via strict writer
         update_hop_labels_only(ip, hops, settings, logger)
-
         if hop_path_changed or loss_changed:
-            logger.debug(f"[{ip}] Parsed hops: {[ (h.get('count'), h.get('host'), h.get('Avg')) for h in hops ]}")
             save_trace_and_json(ip, hops, settings, logger)
             logger.info(f"[{ip}] Traceroute and hop map saved.")
         else:
