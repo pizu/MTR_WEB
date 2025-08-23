@@ -251,11 +251,48 @@ def setup_logger(
     if logger.handlers:
         return logger
 
-    # Decide level
+    # Decide level from YAML logging_levels (or default INFO)
     default_level = logging.INFO
     if settings:
-        levels = settings.get("logging_levels", {})
-        level_name = levels._
+        levels = settings.get("logging_levels", {}) or {}
+        # exact match first, else fallback to 'default'
+        level_name = levels.get(name, levels.get("default", "INFO"))
+        default_level = _level_from_name(level_name, logging.INFO)
+
+    if level_override:
+        default_level = _level_from_name(level_override, default_level)
+
+    logger.setLevel(default_level)
+    logger.propagate = False  # don't duplicate to root
+
+    # Formatter (timestamps + level + message)
+    fmt = "%(asctime)s [%(levelname)s] %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
+
+    # File handler (to central logs dir) if settings available
+    if settings:
+        all_paths = resolve_all_paths(settings)
+        logs_dir = all_paths["logs"] or _expand("./logs")
+        _mkdir_p(logs_dir)
+
+        if not logfile:
+            logfile = os.path.join(logs_dir, f"{name}.log")
+
+        fh = RotatingFileHandler(logfile, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        fh.setLevel(default_level)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
+    # Console handler (always add one)
+    ch = logging.StreamHandler(stream=sys.stdout)
+    ch.setLevel(default_level)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    logger.debug(f"Logger '{name}' initialized at level {logging.getLevelName(default_level)}")
+    return logger
+
 def refresh_logger_levels(settings: Dict[str, Any], logger_names: Optional[List[str]] = None) -> None:
     """
     Update logging levels for existing loggers according to settings['logging_levels'].
