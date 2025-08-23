@@ -1,105 +1,193 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-timeseries_exporter.py
-======================
-Exports Chart.js‑friendly JSON time‑series bundles for each target & time range:
-  html/data/<ip>_<rangeLabel>.json
+scripts/timeseries_exporter.py
+==============================
 
-CLI compatibility:
-- New style:  --settings /path/to/mtr_script_settings.yaml
-- Legacy:     timeseries_exporter.py /path/to/mtr_script_settings.yaml
-- Default:    repo root ../mtr_script_settings.yaml when no args provided
+Purpose
+-------
+Export Chart.js-friendly JSON time-series for each target IP and time range
+into <paths.html>/data, using the per-target RRD and hop labels/cache.
 
-Exit codes:
-- 0 on success (even if some targets/ranges fail; those failures are logged)
-- 1 for fatal launcher errors (settings unreadable, targets file unreadable, etc.)
+Data source
+-----------
+Per-target RRDs must live under settings['paths']['rrd'] as <ip>.rrd.
 
-No functional change here other than depending on the updated exporter which now emits
-'varies' from 'stdev' DS if present in the RRD schema.
+Outputs
+-------
+For each (ip, range), write:
+    <paths.html>/data/<ip>_<label>.json
+
+Configuration
+-------------
+- YAML: mtr_script_settings.yaml (path passed via --settings)
+  Required paths:
+    paths.html, paths.rrd
+  Optional:
+    paths.logs, paths.graphs, paths.cache
+  Strict:
+    paths.traceroute  (used by exporter to read hop labels; not created)
+
+- Targets file (YAML):
+  Auto-resolved by utils.resolve_targets_path(settings):
+    1) settings['files']['targets'] if set (resolved relative to settings file)
+    2) ./mtr_targets.yaml next to the settings file
+    3) ./mtr_targets.yaml in CWD
+
+Accepted shapes:
+  - list of dicts: [{'ip':'1.1.1.1', 'description':'...', 'pause':false}, ...]
+  - mapping: {'1.1.1.1': {'description':'...', 'pause':false}, ...}
+
+CLI
+---
+--settings PATH    : YAML settings path (default: mtr_script_settings.yaml)
+--ip IP            : export only this single IP
+--label LABEL      : export only this time range label (e.g., '1h')
+--dry-run          : log actions without writing files
+
+Notes
+-----
+- If --ip is omitted, targets are loaded from the targets YAML.
+- If --label is omitted, time ranges come from settings['graph_time_ranges'].
+- The exporter will log and skip if the RRD is missing.
+
 """
+
+from __future__ import annotations
 
 import os
 import sys
 import argparse
+from typing import Dict, Any, List
+
 import yaml
 
-# --- make scripts/modules importable (works via systemd and shell) ---
-SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
-REPO_ROOT   = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))
-MODULES_DIR = os.path.join(SCRIPTS_DIR, "modules")
-for p in (MODULES_DIR, SCRIPTS_DIR, REPO_ROOT):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from modules.utils import (
+    load_settings,
+    setup_logger,
+    resolve_all_paths,
+    resolve_html_dir,
+    resolve_targets_path,  # IMPORTANT: pass settings when calling
+    get_html_ranges,
+)
 
-from modules.utils import load_settings, setup_logger, resolve_targets_path, get_html_ranges  # noqa: E402
-from modules.rrd_exporter import export_ip_timerange_json                                     # noqa: E402
+from modules.rrd_exporter import export_ip_timerange_json
 
 
-def resolve_settings_path(default_name: str = "mtr_script_settings.yaml") -> str:
+# -----------------------------------------------------------------------------
+# Targets loading
+# -----------------------------------------------------------------------------
+
+def _load_targets_from_file(path: str) -> List[Dict[str, Any]]:
     """
-    Resolve settings path compatibly:
-      1) --settings <path>
-      2) first positional (legacy)
-      3) ../mtr_script_settings.yaml
+    Parse a targets YAML file and return a list of active targets:
+      [{'ip': '1.1.1.1', 'description': '...', 'pause': False}, ...]
     """
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--settings", dest="settings", default=None)
-    known, _ = parser.parse_known_args()
-    if known.settings and known.settings != "--settings":
-        return os.path.abspath(known.settings)
-    for tok in sys.argv[1:]:
-        if not tok.startswith("-"):
-            return os.path.abspath(tok)
-    return os.path.abspath(os.path.join(REPO_ROOT, default_name))
+    if not os.path.isfile(path):
+        return []
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    out: List[Dict[str, Any]] = []
+
+    if isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            ip = str(row.get("ip") or "").strip()
+            if not ip:
+                continue
+            out.append({
+                "ip": ip,
+                "description": str(row.get("description") or ""),
+                "pause": bool(row.get("pause") or row.get("paused") or False),
+            })
+
+    elif isinstance(data, dict):
+        for ip, row in data.items():
+            if not ip:
+                continue
+            row = row or {}
+            out.append({
+                "ip": str(ip).strip(),
+                "description": str(row.get("description") or ""),
+                "pause": bool(row.get("pause") or row.get("paused") or False),
+            })
+
+    # Drop paused
+    return [t for t in out if not t.get("pause")]
 
 
-def main() -> int:
-    # 1) Settings + logger
-    settings_path = resolve_settings_path()
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+
+def main(argv: List[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Export RRD time-series JSON bundles")
+    ap.add_argument("--settings", default="mtr_script_settings.yaml",
+                    help="Path to YAML settings (default: mtr_script_settings.yaml)")
+    ap.add_argument("--ip", help="Export only this IP")
+    ap.add_argument("--label", help="Export only this time range label (e.g. '1h')")
+    ap.add_argument("--dry-run", action="store_true", help="Log actions without writing files")
+    args = ap.parse_args(argv)
+
+    # Settings + logger
     try:
-        settings = load_settings(settings_path)
+        settings = load_settings(args.settings)
     except Exception as e:
-        print(f"[FATAL] Failed to load settings '{settings_path}': {e}", file=sys.stderr)
+        print(f"[FATAL] cannot load settings: {e}", file=sys.stderr)
         return 1
 
     logger = setup_logger("timeseries_exporter", settings=settings)
+    paths = resolve_all_paths(settings)
+    html_dir = resolve_html_dir(settings)  # ensures <html> exists
 
-    # 2) Load targets (repo root)
-    targets_file = resolve_targets_path()
-    try:
-        with open(targets_file, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        targets = data.get("targets", []) or []
-        logger.info(f"Loaded {len(targets)} targets from {targets_file}")
-    except Exception as e:
-        logger.error(f"Failed to load targets from {targets_file}: {e}")
-        return 1
+    # Determine time ranges
+    ranges = get_html_ranges(settings)
+    if args.label:
+        ranges = [r for r in ranges if r.get("label") == args.label]
+        if not ranges:
+            logger.error(f"No matching time range label: {args.label}")
+            return 1
 
-    # 3) Time ranges
-    ranges = [r for r in (get_html_ranges(settings) or []) if r.get("label") and r.get("seconds")]
+    # Determine IPs
+    ips: List[str]
+    if args.ip:
+        ips = [args.ip]
+    else:
+        targets_file = resolve_targets_path(settings)  # FIX: pass settings
+        targets = _load_targets_from_file(targets_file)
+        ips = [t["ip"] for t in targets]
 
-    if not ranges:
-        logger.warning("No graph_time_ranges in settings; nothing to export.")
+    if not ips:
+        logger.warning("No targets to export (no --ip given and targets file empty/missing).")
         return 0
 
-    # 4) Export
-    total = 0
-    for t in targets:
-        ip = t.get("ip")
-        if not ip:
-            continue
-        for rng in ranges:
-            label = rng["label"]
-            seconds = int(rng["seconds"])
-            try:
-                export_ip_timerange_json(ip, settings, label, seconds, logger=logger)
-                total += 1
-            except Exception as e:
-                logger.warning(f"[{ip}] export failed for {label}: {e}")
+    if not ranges:
+        logger.warning("No time ranges configured; nothing to export.")
+        return 0
 
-    logger.info(f"Done. JSON bundles generated: {total}")
+    logger.info(f"Exporting {len(ips)} IP(s) over {len(ranges)} time range(s) into {os.path.join(html_dir, 'data')}")
+
+    # Export
+    total = 0
+    for ip in ips:
+        for r in ranges:
+            label = r["label"]
+            seconds = int(r["seconds"])
+            logger.info(f"[{ip}] {label} ({seconds}s)")
+
+            if args.dry_run:
+                continue
+
+            out_path = export_ip_timerange_json(ip, settings, label, seconds, logger=logger)
+            logger.debug(f"[{ip}] wrote {out_path}")
+            total += 1
+
+    logger.info(f"Done. Exported {total} bundle(s).")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
