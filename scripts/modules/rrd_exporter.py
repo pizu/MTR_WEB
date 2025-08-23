@@ -18,7 +18,7 @@ Fields included:
 
 Notes:
 - RRD stores only numeric DS; varies is derived from hop labels + a small cache.
-- This version robustly resolves the traceroute directory, honoring your YAML.
+- This version strictly follows YAML/env for traceroute folder, logging the choice.
 """
 
 import os
@@ -31,9 +31,9 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Any, Optional
 
 from modules.graph_utils import get_labels
-from modules.utils import resolve_html_dir, resolve_all_paths
+from modules.utils import resolve_html_dir, resolve_all_paths, setup_logger
 
-# ---------- tiny helpers ----------
+# ---------- helpers ----------
 
 def _now_epoch() -> int:
     return int(time.time())
@@ -68,7 +68,7 @@ def _extract_endpoint(label_text: str) -> str:
     m = LABEL_ENDPOINT_RE.match(label_text or "")
     return m.group(1) if m else (label_text or "")
 
-# ---------- traceroute dir resolver (follows YAML) ----------
+# ---------- traceroute dir resolver (safeguard at exporter level) ----------
 
 def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) -> Optional[str]:
     """
@@ -76,10 +76,9 @@ def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) 
       1) env MTR_TRACEROUTE_DIR (if exists)
       2) settings.paths.traceroute (if exists)
       3) settings.paths.traces     (legacy key; if exists)
-      4) paths['traceroute']       (if resolve_all_paths added it)
+      4) paths['traceroute']       (from resolve_all_paths)
       5) /opt/scripts/MTR_WEB/traceroute (if exists)
       6) /opt/scripts/MTR_WEB/traces     (if exists)
-    Returns chosen dir or None. Logs the choice.
     """
     cfg_paths = (settings or {}).get("paths", {}) or {}
     env_dir   = os.environ.get("MTR_TRACEROUTE_DIR")
@@ -92,7 +91,6 @@ def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) 
     if cfg_tr:         candidates.append(("settings.paths.traceroute", cfg_tr))
     if cfg_legacy:     candidates.append(("settings.paths.traces", cfg_legacy))
     if paths_tr:       candidates.append(("paths.traceroute", paths_tr))
-    # sensible defaults last
     candidates.extend([
         ("default:traceroute", "/opt/scripts/MTR_WEB/traceroute"),
         ("default:traces",     "/opt/scripts/MTR_WEB/traces"),
@@ -110,7 +108,6 @@ def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) 
             logger.info(f"Using traceroute dir ({chosen_tag}): {chosen}")
         else:
             logger.warning("No usable traceroute path found; hop labels empty and 'varies' cannot update.")
-
     return chosen
 
 # ---------- hop‑IP cache with timestamps ----------
@@ -216,6 +213,8 @@ def _clip_changes_to_window(changes: List[Dict[str, Any]], start_epoch: int, end
 # ---------- export ----------
 
 def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, logger=None) -> str:
+    logger = logger or setup_logger("rrd_exporter", settings=settings)
+
     paths = resolve_all_paths(settings)
     RRD_DIR  = paths["rrd"]
     HTML_DIR = resolve_html_dir(settings)
@@ -229,14 +228,12 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
 
-    # Stub if RRD missing
     if not os.path.exists(rrd_path):
         out = {"ip": ip, "label": label, "seconds": int(seconds), "step": None,
                "timestamps": [], "epoch": [], "rrd_window": None, "hops": []}
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
-        if logger:
-            logger.warning(f"[{ip}] RRD missing, wrote stub: {out_path}")
+        logger.warning(f"[{ip}] RRD missing, wrote stub: {out_path}")
         return out_path
 
     # Resolve traceroute dir strictly following YAML/ENV (with safe fallbacks)
@@ -260,8 +257,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             rrd_path, "AVERAGE", "--start", str(start), "--end", str(end)
         )
     except rrdtool.OperationalError as e:
-        if logger:
-            logger.warning(f"[{ip}] fetch failed for {label}: {e}")
+        logger.warning(f"[{ip}] fetch failed for {label}: {e}")
         out = {"ip": ip, "label": label, "seconds": int(seconds), "step": None,
                "timestamps": [], "epoch": [], "rrd_window": None, "hops": []}
         with open(out_path, "w", encoding="utf-8") as f:
@@ -274,7 +270,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         n = min(len(epochs), len(rows))
         epochs, rows = epochs[:n], rows[:n]
 
-    labels_hhmm = [_fmt_ts(ts if step else int(time.time())) for ts in epochs]
+    labels_hhmm = [_fmt_ts(ts) for ts in epochs]
 
     name_to_idx = {name: i for i, name in enumerate(names or [])}
     def extract_series(ds_name: str):
@@ -324,9 +320,8 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
-    if logger:
-        changed = [h for h in hop_entries if h.get("varies")]
-        if changed:
-            logger.info(f"[{ip}] varies on hops: {', '.join(str(h['hop']) for h in changed)}")
-        logger.info(f"[{ip}] exported {out_path} ({len(epochs)} points, hops={len(hop_entries)})")
+    changed = [h for h in hop_entries if h.get("varies")]
+    if changed:
+        logger.info(f"[{ip}] varies on hops: {', '.join(str(h['hop']) for h in changed)}")
+    logger.info(f"[{ip}] exported {out_path} ({len(epochs)} points, hops={len(hop_entries)})")
     return out_path
