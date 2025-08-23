@@ -2,43 +2,21 @@
 """
 modules/rrd_exporter.py
 
-Purpose
--------
-Export Chart.js‑friendly JSON time‑series for one target IP and one time range label
-(e.g. "30m", "1h"). The output is written under <html_dir>/data/<ip>_<label>.json.
+Exports Chart.js‑friendly JSON time‑series for a target IP and a given time range label.
+Writes to <html_dir>/data/<ip>_<label>.json.
 
-What this script writes
------------------------
-Per bundle (file):
-  - ip, label, seconds, step, timestamps[], epoch[]
-  - rrd_window: {start_epoch, end_epoch, step}           # <-- NEW
-  - hops[]:
-      {
-        hop: <int>,
-        name: "<hop>: <endpoint>",
-        color: "#rrggbb",                                # stable color per hop index
-        varies: <bool>,                                  # true if hop used >1 endpoint in history
-        endpoints: ["ip1", "ip2", ...],                  # all distinct endpoints ever seen
-        changes: [                                       # full history (epoch seconds)
-          {"ip":"ip1","first":1693500000,"last":1693502400},
-          {"ip":"ip2","first":1693503000,"last":1693504200}
-        ],
-        changes_in_window: [ ... ],                      # <-- NEW: history intersected with this export window
-        metrics: { "avg":[...], "last":[...], "best":[...], "loss":[...] }
-      }
+Includes per‑hop variation details:
+- varies: boolean
+- endpoints: [ip,...]
+- changes: [{ip, first, last}, ...]   # full history (epoch seconds)
+- changes_in_window: same, clipped to the current RRD fetch window
+- rrd_window: {start_epoch, end_epoch, step}
 
-Design notes
-------------
-- RRD persists numeric series only (avg/last/best/loss...). The "varies" concept is derived
-  from hop labels (traceroute), so we keep a small JSON cache with per-hop endpoint history.
-- We expose the RRD window in every JSON bundle so any calendar/timeline you build later
-  can be grounded in the *actual* span we fetched from RRD.
-- No RRD schema changes are required.
-
-Suitable for users with basic Python knowledge:
-- Functions are short and documented.
-- Only standard library + rrdtool is used.
-
+Also adds robust traceroute directory resolution:
+- Honors paths.traceroute (preferred) or legacy paths.traces from settings
+- Honors $MTR_TRACEROUTE_DIR if set
+- Falls back to /opt/scripts/MTR_WEB/traceroute or /opt/scripts/MTR_WEB/traces if needed
+- Logs a warning when it must fall back
 """
 
 import os
@@ -48,7 +26,7 @@ import time
 import json
 import rrdtool
 from datetime import datetime
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 from modules.graph_utils import get_labels
 from modules.utils import resolve_html_dir, resolve_all_paths
@@ -93,6 +71,58 @@ LABEL_ENDPOINT_RE = re.compile(r"^\s*\d+\s*:\s*([^\s]+)")
 def _extract_endpoint(label_text: str) -> str:
     m = LABEL_ENDPOINT_RE.match(label_text or "")
     return m.group(1) if m else (label_text or "")
+
+# -----------------------------
+# Traceroute directory resolver
+# -----------------------------
+
+def _resolve_traceroute_dir(paths: Dict[str, str], settings: dict, logger=None) -> Optional[str]:
+    """
+    Decide which directory contains <target>.trace.txt files.
+    Preference order:
+      1) env MTR_TRACEROUTE_DIR (if exists)
+      2) paths['traceroute'] (if exists)
+      3) settings['paths']['traceroute'] (if exists)
+      4) settings['paths']['traces']     (legacy key; if exists)
+      5) /opt/scripts/MTR_WEB/traceroute (if exists)
+      6) /opt/scripts/MTR_WEB/traces     (if exists)
+    Returns the first existing directory, else None.
+    Logs a warning if the configured path is missing and a fallback is used.
+    """
+    env_dir = os.environ.get("MTR_TRACEROUTE_DIR")
+
+    cfg_paths = (settings or {}).get("paths", {}) or {}
+    configured = paths.get("traceroute") or cfg_paths.get("traceroute") or cfg_paths.get("traces")
+
+    candidates = []
+    if env_dir:
+        candidates.append(("env:MTR_TRACEROUTE_DIR", env_dir))
+    if configured:
+        candidates.append(("configured", configured))
+    # Common defaults
+    candidates.extend([
+        ("default:traceroute", "/opt/scripts/MTR_WEB/traceroute"),
+        ("default:traces",     "/opt/scripts/MTR_WEB/traces"),
+    ])
+
+    chosen = None
+    chosen_tag = None
+    for tag, d in candidates:
+        if d and os.path.isdir(d):
+            chosen = d
+            chosen_tag = tag
+            break
+
+    # Log behavior
+    if logger:
+        if configured and chosen and os.path.abspath(chosen) != os.path.abspath(configured):
+            logger.warning(f"Traceroute path '{configured}' not found; using {chosen_tag} -> {chosen}")
+        elif not configured and chosen:
+            logger.warning(f"No traceroute path configured; using {chosen_tag} -> {chosen}")
+        elif not chosen:
+            logger.warning("No usable traceroute path found. Hop labels will be empty; 'varies' cannot update.")
+
+    return chosen
 
 # -----------------------------
 # Hop-IP cache with timestamps
@@ -265,8 +295,10 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             logger.warning(f"[{ip}] RRD missing, wrote stub: {out_path}")
         return out_path
 
-    # Legend labels (current snapshot)
-    traceroute_dir = paths["traceroute"]
+    # --- Robust traceroute dir resolution ---
+    traceroute_dir = _resolve_traceroute_dir(paths, settings, logger=logger)
+
+    # Legend labels (current snapshot; may be [])
     hops_legend = get_labels(ip, traceroute_dir=traceroute_dir) or []
 
     # Cache (history) update
@@ -303,7 +335,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         epochs = epochs[:n]
         rows = rows[:n]
 
-    labels_hhmm = [_fmt_ts(ts if step else int(time.now())) for ts in epochs]
+    labels_hhmm = [_fmt_ts(ts if step else int(time.time())) for ts in epochs]
 
     # Map DS names to columns
     name_to_idx = {name: i for i, name in enumerate(names or [])}
@@ -336,7 +368,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             "varies": bool(varies_map.get(key, False)),
             "endpoints": [rec["ip"] for rec in full_changes],
             "changes": full_changes,
-            "changes_in_window": clipped,  # <-- for UI/calendar to use immediately
+            "changes_in_window": clipped,  # for UI/calendar to use immediately
             "metrics": {}
         }
         for m_schema in schema_metrics:
@@ -351,7 +383,7 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         "step": step,
         "timestamps": labels_hhmm,
         "epoch": epochs,
-        "rrd_window": { "start_epoch": window_start, "end_epoch": window_end, "step": step },
+        "rrd_window": { "start_epoch": int(f_start), "end_epoch": int(f_end), "step": step },
         "hops": hop_entries
     }
     with open(out_path, "w", encoding="utf-8") as f:
