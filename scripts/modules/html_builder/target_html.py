@@ -3,10 +3,10 @@
 #
 # Interactive Chart.js renderer.
 #
-# Update (per-hop 'varies' flag support):
-# - Colors remain by hop index (stable).
-# - Legend chips show a "varies" badge when a hop's endpoint changed across exports.
-# - Tooltip title includes a note when varies=true.
+# Update (per-hop variation label + times):
+# - Legend labels show: "<hop>: varies (ip1, ip2, ...)" when varies=true.
+# - Tooltip title shows the same, and if 'changes' exist, a second line with last-seen times.
+# - All text keeps the same color as the rest of the UI (no black text).
 
 import os, re, html
 from datetime import datetime
@@ -94,7 +94,6 @@ body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-
 .legend .item { display:flex; align-items:center; gap:8px; padding:6px 10px; background:var(--chip); border:1px solid var(--border); border-radius:999px; cursor:pointer; user-select:none; color: var(--text); }
 .legend .item.dim{ opacity:.35; }
 .legend .swatch{ width:12px; height:12px; border-radius:3px; border:1px solid #00000055; }
-.legend .badge { font-size:10px; padding:2px 6px; border-radius:999px; border:1px dashed #00000055; background:var(--accent); color: var(--text); }
 .panel{ padding:16px 20px; }
 .note{ color:var(--muted); font-size:12px; margin-top:8px; }
 select{ background:#0b1220; color:#e5e7eb; border:1px solid var(--border); border-radius:8px; padding:6px 10px; }
@@ -118,7 +117,7 @@ th, td { border: 1px solid #334155; padding: 6px 8px; text-align: left; }
     <div class="toolbar">
       <div><label for="metric">Metric:</label> <select id="metric"></select></div>
       <div><label for="range">Time Range:</label> <select id="range"></select></div>
-      <div class="note">Colors are stable per hop number; "varies" highlights hops whose endpoint changed.</div>
+      <div class="note">Colors are stable per hop number; "varies" means this hop's endpoint changed.</div>
     </div>
     <div class="panel">
       <div class="chart-container"><canvas id="mtrChart"></canvas></div>
@@ -181,18 +180,27 @@ function fillSelectWithLabels(sel, keys, labelsMap) {
   sel.selectedIndex = 0;
 }
 
+// Build datasets AND also attach friendly legend/tooltip text per hop
 function buildDatasetsFromBundle(bundle, metric) {
-  return (bundle.hops || []).map(h => ({
-    label: h.name + (h.varies ? " (varies)" : ""),
-    data: (h.metrics && h.metrics[metric]) ? h.metrics[metric] : [],
-    borderColor: h.color || '#888',
-    backgroundColor: h.color || '#888',
-    spanGaps: true,
-    borderWidth: 2,
-    pointRadius: 2,
-    tension: 0.25,
-    yAxisID: metric === 'loss' ? 'yLoss' : 'yLatency'
-  }));
+  return (bundle.hops || []).map(h => {
+    const varies = !!h.varies;
+    const eps = Array.isArray(h.endpoints) ? h.endpoints : [];
+    const label = varies && eps.length
+      ? `${h.hop}: varies (${eps.join(", ")})`
+      : (h.name || `${h.hop}: ?`);
+    return {
+      label,
+      _changes: Array.isArray(h.changes) ? h.changes : [],  // for tooltip
+      data: (h.metrics && h.metrics[metric]) ? h.metrics[metric] : [],
+      borderColor: h.color || '#888',
+      backgroundColor: h.color || '#888',
+      spanGaps: true,
+      borderWidth: 2,
+      pointRadius: 2,
+      tension: 0.25,
+      yAxisID: metric === 'loss' ? 'yLoss' : 'yLatency'
+    };
+  });
 }
 
 let currentBundle = null;
@@ -210,6 +218,13 @@ let chart = new Chart(ctx, {
             const it = items[0];
             if (!it) return '';
             const ds = it.chart.data.datasets[it.datasetIndex];
+            // If we have change records, add a second line with last-seen per IP.
+            if (ds && Array.isArray(ds._changes) && ds._changes.length) {
+              const lastLine = ds._changes
+                .map(c => `${c.ip} — last: ${new Date((c.last||0)*1000).toLocaleString()}`)
+                .join(' • ');
+              return `${ds.label}\n${lastLine}`;
+            }
             return ds ? ds.label : '';
           },
           label: (item) => {
@@ -234,7 +249,7 @@ function renderLegend() {
   chart.data.datasets.forEach((ds, idx) => {
     const item = document.createElement('button');
     item.className = 'item' + (ds.hidden ? ' dim' : '');
-    item.title = (ds.label || '');
+    item.title = ds.label || '';
     item.onclick = (ev) => {
       if (ev.altKey) {
         const visible = chart.data.datasets.filter(d=>!d.hidden);
@@ -246,23 +261,12 @@ function renderLegend() {
       chart.update(); renderLegend();
     };
     const swatch = document.createElement('span'); swatch.className = 'swatch';
-    // Extract the borderColor to render the chip color
     swatch.style.backgroundColor = ds.borderColor || '#888';
 
-    const label = document.createElement('span'); 
-    label.textContent = ds.label.replace(/\s*\(varies\)\s*$/, "");
-
-    item.appendChild(swatch); 
+    const label = document.createElement('span');
+    label.textContent = ds.label || '';
+    item.appendChild(swatch);
     item.appendChild(label);
-
-    // If the dataset label indicates varies, add a badge
-    if (/\(varies\)\s*$/.test(ds.label)) {
-      const badge = document.createElement('span'); 
-      badge.className = 'badge'; 
-      badge.textContent = 'varies';
-      item.appendChild(badge);
-    }
-
     legendEl.appendChild(item);
   });
 }
