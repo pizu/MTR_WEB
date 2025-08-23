@@ -2,19 +2,14 @@
 """
 utils.py — Shared utility functions for the MTR monitoring system.
 
-What’s new in this version
---------------------------
-1) Traceroute path resolution is now *centralized* and robust:
-   - Honors environment override: MTR_TRACEROUTE_DIR (if it exists)
-   - Uses settings['paths']['traceroute'] (preferred)
-   - Falls back to legacy settings['paths']['traces'] (older configs)
-   - If neither exists, tries common defaults:
-       /opt/scripts/MTR_WEB/traceroute
-       /opt/scripts/MTR_WEB/traces
-   - Logs the final choice via your configured logging.
+This version fixes a recursion loop between resolve_all_paths() and setup_logger()
+by ensuring resolve_all_paths() never calls setup_logger(). It uses a plain logger
+only if handlers already exist; otherwise it remains silent during bootstrap.
 
-2) Logging continues to use your YAML-driven levels and files.
-3) All functions documented for users with basic Python knowledge.
+Functionality retained:
+- Robust traceroute directory resolution (env -> YAML -> legacy -> defaults).
+- Centralized path resolution.
+- Logger configuration via setup_logger() (unchanged API).
 """
 
 import os
@@ -41,10 +36,7 @@ def load_settings(settings_path: Optional[str] = None) -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 def repo_root() -> str:
-    """
-    Return the absolute path to the repository root.
-    (Two levels up from this file.)
-    """
+    """Return the absolute path to the repository root (two levels up)."""
     return str(Path(__file__).resolve().parents[2])
 
 # -------------------------------
@@ -81,7 +73,7 @@ def get_path(settings: dict, key: str, legacy_keys=None, default=None) -> str:
                 return str(settings[k])
     return default
 
-def resolve_all_paths(settings: dict) -> Dict[str, str]:
+def resolve_all_paths(settings: dict) -> dict:
     """
     Build a canonical paths dict consumed by the rest of the code.
 
@@ -97,16 +89,16 @@ def resolve_all_paths(settings: dict) -> Dict[str, str]:
       4) /opt/scripts/MTR_WEB/traceroute
       5) /opt/scripts/MTR_WEB/traces
 
-    A log line is emitted to show which traceroute directory is in use.
+    IMPORTANT: This function deliberately avoids setup_logger() to prevent recursion.
+               It uses a plain logger only if handlers already exist.
     """
     paths_cfg = (settings or {}).get("paths", {}) or {}
-    logger = setup_logger("paths", settings=settings)
 
-    html_dir = paths_cfg.get("html") or "/opt/scripts/MTR_WEB/html"
-    rrd_dir  = paths_cfg.get("rrd")  or "/opt/scripts/MTR_WEB/data"
-    logs_dir = paths_cfg.get("logs") or "/opt/scripts/MTR_WEB/logs"
+    html_dir   = paths_cfg.get("html") or "/opt/scripts/MTR_WEB/html"
+    rrd_dir    = paths_cfg.get("rrd")  or "/opt/scripts/MTR_WEB/data"
+    logs_dir   = paths_cfg.get("logs") or "/opt/scripts/MTR_WEB/logs"
     graphs_dir = paths_cfg.get("graphs") or (str(Path(html_dir) / "graphs"))
-    cache_dir  = paths_cfg.get("cache")  # may be None; callers will fallback if needed
+    cache_dir  = paths_cfg.get("cache")  # may be None; callers can fallback
 
     # ---- Traceroute resolution (normalized) ----
     env_tr     = os.environ.get("MTR_TRACEROUTE_DIR")
@@ -130,12 +122,15 @@ def resolve_all_paths(settings: dict) -> Dict[str, str]:
             traceroute_dir, chosen_tag = d, tag
             break
 
-    if traceroute_dir:
-        logger.info(f"Using traceroute dir ({chosen_tag}): {traceroute_dir}")
-    else:
-        logger.warning("No usable traceroute path found; hop labels will be empty and 'varies' cannot update.")
+    # Use a plain logger only if already configured elsewhere (no recursion)
+    log = logging.getLogger("paths")
+    if log.handlers:
+        if traceroute_dir:
+            log.info(f"Using traceroute dir ({chosen_tag}): {traceroute_dir}")
+        else:
+            log.warning("No usable traceroute path found; hop labels will be empty and 'varies' cannot update.")
 
-    # Ensure base dirs exist
+    # Ensure base dirs exist (silent)
     for p in (html_dir, rrd_dir, logs_dir, graphs_dir):
         os.makedirs(p, exist_ok=True)
 
@@ -268,7 +263,9 @@ def setup_logger(
     - Log directory comes from paths.logs
     - Filename comes from logging.files[name], fallback <name>.log
     - Level comes from logging.levels[name], fallback default_level
-    - Optional second file handler if extra_file is provided.
+
+    NOTE: This function still calls resolve_all_paths(settings) — that’s safe now
+          because resolve_all_paths() no longer calls setup_logger().
     """
     settings = settings or {}
     paths = resolve_all_paths(settings)
@@ -299,7 +296,7 @@ def setup_logger(
             logger.addHandler(_make_file_handler(extra_path, effective_level))
             handler_keys.add(ek)
 
-    # Console handler (optional)
+    # Optional console handler
     if settings.get("enable_console_logging", False):
         ck = "console::stdout"
         if ck not in handler_keys:
