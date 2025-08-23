@@ -4,44 +4,47 @@
 modules/utils.py
 ================
 
-Utility helpers shared by all scripts:
+Shared utilities for the MTR_WEB project.
 
-- load_settings(path):            Load YAML settings into a dict.
-- resolve_html_dir(settings):     Return the HTML output directory from YAML.
-- resolve_all_paths(settings):    Resolve *all* important directories from YAML.
-- setup_logger(name, ...):        Create/get a configured logger writing to the central logs dir.
+Key responsibilities
+--------------------
+- Settings loading (YAML) and normalization.
+- Strict directory resolution:
+    * html/graphs/logs/cache are safe to create.
+    * rrd and traceroute are inputs; we do NOT auto-create them.
+    * traceroute is STRICTLY taken from YAML (no env or legacy fallbacks).
+- Logger setup with rotating file handler + console.
+- Live refresh of logger levels from YAML (refresh_logger_levels).
+- HTML/graph helpers:
+    * get_html_ranges(settings) -> sanitized time range list for UI/exports.
+    * resolve_canvas(settings)  -> convenience bundle the UI/readers can use.
 
-This file enforces a **strict** policy for the traceroute directory:
-  - Only settings['paths']['traceroute'] is accepted.
-  - If it's missing or doesn't exist, we return None (and log an error).
-  - No environment or legacy fallback is allowed for 'traceroute'.
-
-Expected YAML (minimal):
-------------------------
+YAML expectations (minimum)
+---------------------------
 paths:
   rrd: /opt/scripts/MTR_WEB/data
   graphs: /opt/scripts/MTR_WEB/html/graphs
   html: /opt/scripts/MTR_WEB/html
   logs: /opt/scripts/MTR_WEB/logs
   traceroute: /opt/scripts/MTR_WEB/traceroute
-  # Optional cache base (if omitted, we use <html>/var/hop_ip_cache):
+  # Optional:
   # cache: /opt/scripts/MTR_WEB/html/var/hop_ip_cache
+
+graph_time_ranges:
+  - label: "15m"
+    seconds: 900
+  - label: "1h"
+    seconds: 3600
+  - label: "24h"
+    seconds: 86400
 
 logging_levels:
   default: INFO
-  mtr_watchdog: INFO
   controller: INFO
+  mtr_watchdog: INFO
   rrd_exporter: INFO
   html_generator: INFO
-  graph_generator: INFO
   modules: WARNING
-
-Notes
------
-- This module *creates* directories that are safe to materialize (html, graphs, logs, cache).
-  It does NOT create 'rrd' or 'traceroute' automatically — those are considered data inputs.
-- Rotating file logs are used to avoid unbounded growth.
-
 """
 
 from __future__ import annotations
@@ -51,10 +54,9 @@ import sys
 import yaml
 import json
 import time
-import errno
 import logging
 from logging.handlers import RotatingFileHandler
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 
 # -----------------------------------------------------------------------------
@@ -62,13 +64,13 @@ from typing import Dict, Any, Optional
 # -----------------------------------------------------------------------------
 
 def _expand(path: Optional[str]) -> Optional[str]:
-    """Expand ~ and environment variables; return None for falsy inputs."""
+    """Expand ~ and environment variables; return absolute path or None."""
     if not path:
         return None
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
-def _mkdir_p(path: str) -> None:
+def _mkdir_p(path: Optional[str]) -> None:
     """Create a directory (and parents) if it doesn't exist. No error if it does."""
     if not path:
         return
@@ -78,7 +80,7 @@ def _mkdir_p(path: str) -> None:
 def _read_yaml(fp: str) -> Dict[str, Any]:
     """Read a YAML file into a dict. Empty files produce {}."""
     with open(fp, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)  # type: ignore[no-redef]
+        data = yaml.safe_load(f)
     return data or {}
 
 
@@ -88,24 +90,24 @@ def _read_yaml(fp: str) -> Dict[str, Any]:
 
 def load_settings(path: str) -> Dict[str, Any]:
     """
-    Load YAML settings from 'path' and normalize the structure a bit.
-    Raises FileNotFoundError if the file doesn't exist.
+    Load YAML settings from 'path' and normalize the structure.
 
-    Returns
-    -------
-    dict : settings object
+    - Ensures top-level keys exist: 'paths', 'logging_levels'.
+    - Expands ~ and environment variables for known path keys.
+
+    Raises
+    ------
+    FileNotFoundError if the file is not found.
     """
     path = _expand(path) or path
     if not path or not os.path.isfile(path):
         raise FileNotFoundError(f"Settings file not found: {path}")
 
     data = _read_yaml(path)
-
-    # Ensure top-level dict keys exist
     data.setdefault("paths", {})
     data.setdefault("logging_levels", {})
 
-    # Normalize paths: expand ~ and env vars
+    # Normalize/expand paths
     p = data["paths"]
     for k in ("rrd", "graphs", "html", "logs", "traceroute", "cache"):
         if k in p:
@@ -127,71 +129,146 @@ def resolve_html_dir(settings: Dict[str, Any]) -> str:
 
 def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """
-    Resolve all key directories from YAML. This function enforces the strict
-    traceroute path policy (YAML only, no fallback).
+    Resolve all important directories. STRICT policy for traceroute:
+    - Only settings['paths']['traceroute'] is accepted.
+    - If missing or not a directory, we return None (and log if a logger exists).
 
-    Returns
-    -------
-    dict with keys:
-      - rrd         (str|None)  : RRD directory (no auto-create)
-      - graphs      (str)       : HTML graphs directory (auto-create)
-      - html        (str)       : HTML base directory (auto-create)
-      - logs        (str)       : central logs directory (auto-create)
-      - traceroute  (str|None)  : traceroute artifacts directory (YAML-only; no auto-create)
-      - cache       (str)       : cache base (auto-create; defaults to <html>/var/hop_ip_cache)
+    Returns a dict:
+      rrd         : str|None (input; not created)
+      graphs      : str      (created if needed)
+      html        : str      (created if needed)
+      logs        : str      (created if needed)
+      traceroute  : str|None (input; not created)
+      cache       : str      (created if needed; default <html>/var/hop_ip_cache)
     """
-    # --- unpack paths (already expanded by load_settings)
     paths_cfg = settings.get("paths", {})
-    rrd_dir   = paths_cfg.get("rrd")
-    graphs    = paths_cfg.get("graphs")
-    html_dir  = paths_cfg.get("html")
-    logs_dir  = paths_cfg.get("logs")
-    cache_dir = paths_cfg.get("cache")
 
     # html/logs/graphs: safe to create
-    html_dir  = html_dir or _expand("./html")
+    html_dir = paths_cfg.get("html") or _expand("./html")
     _mkdir_p(html_dir)
 
-    logs_dir  = logs_dir or _expand("./logs")
+    logs_dir = paths_cfg.get("logs") or _expand("./logs")
     _mkdir_p(logs_dir)
 
-    graphs    = graphs or os.path.join(html_dir, "graphs")
-    _mkdir_p(graphs)
+    graphs_dir = paths_cfg.get("graphs") or os.path.join(html_dir, "graphs")
+    _mkdir_p(graphs_dir)
 
     # cache: default under HTML
-    if not cache_dir:
-        cache_dir = os.path.join(html_dir, "var", "hop_ip_cache")
+    cache_dir = paths_cfg.get("cache") or os.path.join(html_dir, "var", "hop_ip_cache")
     _mkdir_p(cache_dir)
 
-    # rrd: data input; don't create if missing (that's a deployment issue)
+    # rrd: input; don't create
+    rrd_dir = paths_cfg.get("rrd")
     if rrd_dir:
         rrd_dir = _expand(rrd_dir)
 
-    # ---- Traceroute (STRICT: YAML only; do not create)
+    # traceroute: STRICT YAML only; do not create
     tr_yaml = paths_cfg.get("traceroute")
     traceroute_dir = _expand(tr_yaml) if tr_yaml else None
     if traceroute_dir and not os.path.isdir(traceroute_dir):
-        # Do not create it. Treat as missing.
         traceroute_dir = None
 
-    # Optional: light logging if global logging exists already
     log = logging.getLogger("paths")
-    if log.handlers:  # avoid creating handlers here (setup_logger will do it)
+    if log.handlers:
         if traceroute_dir:
             log.info(f"Using traceroute dir (settings.paths.traceroute): {traceroute_dir}")
         else:
             log.error(
-                "settings.paths.traceroute is missing or does not exist. "
+                "settings.paths.traceroute is missing or not a directory. "
                 "Writers must refuse to write; readers will have empty hop labels."
             )
 
     return {
         "rrd": rrd_dir,
-        "graphs": graphs,
+        "graphs": graphs_dir,
         "html": html_dir,
         "logs": logs_dir,
         "traceroute": traceroute_dir,
         "cache": cache_dir,
+    }
+
+
+# -----------------------------------------------------------------------------
+# HTML / Graph helpers
+# -----------------------------------------------------------------------------
+
+def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
+    """
+    Return a sanitized list of time ranges for the UI/exports.
+
+    Input is expected under settings['graph_time_ranges'] as a list of dicts:
+      - label (str)
+      - seconds (int > 0)
+
+    We:
+      - coerce/validate types,
+      - drop invalid/duplicate labels (first wins),
+      - sort by 'seconds' ascending.
+
+    Example output:
+      [{"label": "15m", "seconds": 900}, {"label": "1h", "seconds": 3600}, ...]
+    """
+    raw = settings.get("graph_time_ranges") or []
+    out: List[Dict[str, int]] = []
+    seen = set()
+
+    # Robust parsing
+    if isinstance(raw, dict):
+        # handle mapping forms like {"15m": 900, "1h": 3600}
+        for k, v in raw.items():
+            label = str(k).strip()
+            try:
+                seconds = int(v)
+            except Exception:
+                continue
+            if not label or seconds <= 0 or label in seen:
+                continue
+            seen.add(label)
+            out.append({"label": label, "seconds": seconds})
+
+    elif isinstance(raw, list):
+        for row in raw:
+            label, seconds = None, None
+            if isinstance(row, dict):
+                label = str(row.get("label") or "").strip()
+                try:
+                    seconds = int(row.get("seconds"))
+                except Exception:
+                    seconds = None
+            elif isinstance(row, str):
+                # Accept "label:seconds" strings as a fallback (e.g., "1h:3600")
+                parts = row.split(":")
+                if len(parts) == 2:
+                    label = parts[0].strip()
+                    try:
+                        seconds = int(parts[1].strip())
+                    except Exception:
+                        seconds = None
+            if not label or not seconds or seconds <= 0 or label in seen:
+                continue
+            seen.add(label)
+            out.append({"label": label, "seconds": seconds})
+
+    # Sort by seconds (ascending)
+    out.sort(key=lambda r: r["seconds"])
+    return out
+
+
+def resolve_canvas(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convenience bundle for HTML/graph modules (e.g., graph_config.py).
+    Returns:
+      {
+        "html_dir":   <paths.html>,
+        "graph_dir":  <paths.graphs>,
+        "time_ranges": get_html_ranges(settings),
+      }
+    """
+    paths = resolve_all_paths(settings)
+    return {
+        "html_dir": paths["html"],
+        "graph_dir": paths["graphs"],
+        "time_ranges": get_html_ranges(settings),
     }
 
 
@@ -226,28 +303,9 @@ def setup_logger(
 ) -> logging.Logger:
     """
     Create (or retrieve) a logger that writes to the central logs directory.
-
-    Parameters
-    ----------
-    name : str
-        Logger name; also used as default filename <logs>/<name>.log
-    settings : dict|None
-        Settings dict with 'paths' and 'logging_levels'. If None, a console-only logger is created.
-    logfile : str|None
-        Explicit log file path. If None, use <paths.logs>/<name>.log
-    level_override : str|None
-        If provided, overrides the level computed from logging_levels.
-    max_bytes : int
-        RotatingFileHandler size threshold per file.
-    backup_count : int
-        Number of old log files to keep.
-
-    Returns
-    -------
-    logging.Logger
+    Adds both a rotating file handler (if settings are available) and a console handler.
     """
     logger = logging.getLogger(name)
-    # If already configured, return as-is
     if logger.handlers:
         return logger
 
@@ -255,7 +313,6 @@ def setup_logger(
     default_level = logging.INFO
     if settings:
         levels = settings.get("logging_levels", {}) or {}
-        # exact match first, else fallback to 'default'
         level_name = levels.get(name, levels.get("default", "INFO"))
         default_level = _level_from_name(level_name, logging.INFO)
 
@@ -270,7 +327,7 @@ def setup_logger(
     datefmt = "%Y-%m-%d %H:%M:%S"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
 
-    # File handler (to central logs dir) if settings available
+    # File handler (to central logs dir) if settings present
     if settings:
         all_paths = resolve_all_paths(settings)
         logs_dir = all_paths["logs"] or _expand("./logs")
@@ -293,63 +350,49 @@ def setup_logger(
     logger.debug(f"Logger '{name}' initialized at level {logging.getLevelName(default_level)}")
     return logger
 
+
 def refresh_logger_levels(settings: Dict[str, Any], logger_names: Optional[List[str]] = None) -> None:
     """
     Update logging levels for existing loggers according to settings['logging_levels'].
 
     Behavior:
-      - Exact-name match first (e.g., 'controller', 'mtr_watchdog', 'rrd_exporter').
+      - Exact-name match first (e.g., 'controller', 'mtr_watchdog').
       - If name starts with 'modules' and 'modules' key exists, use that as a group default.
       - Otherwise fall back to 'default' (INFO if missing).
-      - Each logger's handlers also get their level updated to keep them in sync.
-
-    Example YAML:
-      logging_levels:
-        default: INFO
-        controller: DEBUG
-        mtr_watchdog: INFO
-        rrd_exporter: WARNING
-        modules: WARNING
+      - Each logger's handlers also get their level updated for consistency.
     """
     levels_cfg = (settings or {}).get("logging_levels", {})
     default_level = _level_from_name(levels_cfg.get("default", "INFO"))
 
-    # Optional: limit updates to a subset of names
-    names_to_consider: List[str]
+    # Which loggers to touch?
     if logger_names:
         names_to_consider = logger_names
     else:
-        # All currently-created loggers (skip placeholders)
         names_to_consider = [
             n for (n, obj) in logging.root.manager.loggerDict.items()
             if isinstance(obj, logging.Logger)
         ]
-        # Ensure root and our own are included
         if "root" not in names_to_consider:
             names_to_consider.append("root")
 
     for name in names_to_consider:
         lg = logging.getLogger(None if name == "root" else name)
 
-        # Decide desired level
         level_name = levels_cfg.get(name)
         if not level_name and name.startswith("modules"):
-            level_name = levels_cfg.get("modules")  # group default for module loggers
+            level_name = levels_cfg.get("modules")
         level = _level_from_name(level_name, default_level)
 
-        # Apply to logger
         try:
             lg.setLevel(level)
         except Exception:
             continue
 
-        # Apply to each handler (keep them aligned)
         for h in lg.handlers:
             try:
                 h.setLevel(level)
             except Exception:
                 pass
 
-        # Optional: debug trace to the logger itself (only if not too noisy)
         if lg.isEnabledFor(logging.DEBUG):
             lg.debug(f"Logger '{name}' level refreshed to {logging.getLevelName(level)}")
