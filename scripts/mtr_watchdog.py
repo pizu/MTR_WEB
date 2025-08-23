@@ -187,4 +187,159 @@ def _import_monitor(logger) -> Optional[Callable]:
 def _worker_wrapper(ip: str, settings: Dict[str, Any], entrypoint_path: str):
     """
     Child process target. Re-import the entrypoint in the child (safe for fork/spawn),
-    then call monito
+    then call monitor_target(ip, settings=settings).
+    """
+    # Defer imports to child
+    import importlib
+    import logging
+
+    logger = setup_logger(f"{ip}", settings=settings, logfile=None)  # per-IP console+file via settings
+
+    mod_name, func_name = entrypoint_path.split(":")
+    try:
+        mod = importlib.import_module(mod_name)
+        fn = getattr(mod, func_name)
+    except Exception as e:
+        logger.error(f"[{ip}] Failed to import monitor entrypoint {entrypoint_path}: {e}")
+        return
+
+    try:
+        # Try two common calling conventions
+        try:
+            fn(ip, settings=settings)
+        except TypeError:
+            fn(ip, settings)  # legacy positional
+    except KeyboardInterrupt:
+        logger.info(f"[{ip}] Monitor interrupted (KeyboardInterrupt).")
+    except Exception as e:
+        logger.exception(f"[{ip}] Monitor crashed: {e}")
+
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="MTR_WEB Watchdog")
+    parser.add_argument(
+        "--settings",
+        default="mtr_script_settings.yaml",
+        help="Path to YAML settings (default: mtr_script_settings.yaml)",
+    )
+    parser.add_argument(
+        "--no-spawn",
+        action="store_true",
+        help="Do not spawn per-IP monitors; only acquire writer lock and stay alive.",
+    )
+    args = parser.parse_args(argv)
+
+    # 1) Load settings & logger
+    try:
+        settings = load_settings(args.settings)
+    except Exception as e:
+        print(f"[FATAL] Cannot load settings: {e}", file=sys.stderr)
+        return 1
+
+    logger = setup_logger("mtr_watchdog", settings=settings)
+
+    # 2) Resolve paths (materialize safe ones)
+    paths = resolve_all_paths(settings)
+    tr_dir = paths.get("traceroute")
+    if not tr_dir:
+        logger.error("settings.paths.traceroute is missing or does not exist. Aborting.")
+        return 1
+
+    # 3) Acquire single-writer lock
+    lock_path = os.path.join(tr_dir, ".writer.lock")
+    writer_lock = SingleWriterLock(lock_path)
+    try:
+        writer_lock.acquire()
+    except BlockingIOError:
+        logger.error(f"Another process holds the traceroute writer lock: {lock_path}")
+        return 2
+    except Exception as e:
+        logger.error(f"Failed to acquire traceroute writer lock: {e}")
+        return 2
+
+    logger.info(f"Acquired traceroute writer lock at {lock_path}")
+
+    # Signal handling for graceful shutdown
+    shutdown = {"flag": False}
+
+    def _on_signal(signum, frame):
+        logger.info(f"Received signal {signum}; shutting down.")
+        shutdown["flag"] = True
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
+    # 4) Optionally spawn per-target workers
+    SPAWN_WORKERS = (not args.no_spawn)
+
+    procs: List[mp.Process] = []
+    entrypoint = None
+
+    if SPAWN_WORKERS:
+        entrypoint = _import_monitor(logger)
+        if entrypoint is None:
+            logger.error("No monitor entrypoint available; not spawning workers.")
+            SPAWN_WORKERS = False
+
+    # Normalize entrypoint path string for child import (module:function)
+    entry_path = None
+    if SPAWN_WORKERS and entrypoint is not None:
+        entry_path = f"{entrypoint.__module__}:{entrypoint.__name__}"
+
+    if SPAWN_WORKERS and entry_path:
+        targets = _load_targets(settings, logger)
+        if not targets:
+            logger.warning("No active targets found; watchdog will idle.")
+        else:
+            logger.info(f"Starting {len(targets)} monitor worker(s).")
+            for t in targets:
+                ip = t["ip"]
+                p = mp.Process(target=_worker_wrapper, args=(ip, settings, entry_path), daemon=True)
+                p.start()
+                procs.append(p)
+                logger.info(f"[{ip}] Worker PID {p.pid} started.")
+
+    # 5) Supervision loop
+    try:
+        while not shutdown["flag"]:
+            # Reap dead processes (if any). You can add automatic restart logic here if desired.
+            alive = []
+            for p in procs:
+                if p.is_alive():
+                    alive.append(p)
+                else:
+                    logger.warning(f"Worker PID {p.pid} exited with code {p.exitcode}.")
+            procs = alive
+
+            time.sleep(1.0)
+    finally:
+        # Terminate child workers
+        if procs:
+            logger.info("Terminating child workers...")
+            for p in procs:
+                try:
+                    if p.is_alive():
+                        p.terminate()
+                except Exception:
+                    pass
+            for p in procs:
+                try:
+                    p.join(timeout=3.0)
+                except Exception:
+                    pass
+
+        # Release writer lock
+        try:
+            writer_lock.release()
+        except Exception:
+            pass
+        logger.info("Writer lock released. Bye.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
