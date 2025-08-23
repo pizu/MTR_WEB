@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-# modules/html_builder/target_html.py
-#
-# Interactive Chart.js renderer.
-#
-# Update (per-hop variation label + times):
-# - Legend labels show: "<hop>: varies (ip1, ip2, ...)" when varies=true.
-# - Tooltip title shows the same, and if 'changes' exist, a second line with last-seen times.
-# - All text keeps the same color as the rest of the UI (no black text).
+"""
+modules/html_builder/target_html.py
+
+Purpose
+-------
+Render a per‑target interactive HTML page (Chart.js) that:
+  - Lets the user pick a metric and time range.
+  - Shows one line per hop (color stays stable by hop index).
+  - When a hop is 'varies', the legend text becomes: "<hop>: varies (ip1, ip2, ...)".
+  - Tooltip title includes per‑IP last‑seen times for the current bundle's RRD window.
+
+No changes to your logging configuration or metric handling.
+"""
 
 import os, re, html
 from datetime import datetime
@@ -18,9 +23,9 @@ from modules.utils import (
     get_html_ranges,
 )
 
-# Metric labels (unchanged; we do NOT add a 'varies' metric)
+# Only numeric metrics belong here (NOT 'varies')
 METRIC_LABELS = {
-    "avg": "Avg (ms)",
+    "avg":  "Avg (ms)",
     "last": "Last (ms)",
     "best": "Best (ms)",
     "loss": "Loss (%)",
@@ -29,23 +34,18 @@ METRIC_LABELS = {
 def generate_target_html(ip, description, hops, settings, logger=None):
     logger = logger or setup_logger("target_html", settings=settings)
 
-    # Unified paths
     paths     = resolve_all_paths(settings)
-    HTML_DIR  = resolve_html_dir(settings)               # ensures exists
+    HTML_DIR  = resolve_html_dir(settings)
     DATA_DIR  = os.path.join(HTML_DIR, "data")
     LOG_DIR   = paths["logs"]
     TRACE_DIR = paths["traceroute"]
-    RRD_DIR   = paths["rrd"]
 
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # HTML knobs
     REFRESH_SECONDS, LOG_LINES_DISPLAY = resolve_html_knobs(settings)
-
-    # Time ranges (fallback to legacy graph_time_ranges inside helper)
     TIME_RANGES = [r for r in (get_html_ranges(settings) or []) if r.get("label")]
 
-    # Metrics come from DS names in settings (no 'varies' here)
+    # Metrics from settings (ignore unknowns)
     schema_metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", []) if ds.get("name")]
     METRICS = [m for m in schema_metrics if m in METRIC_LABELS]
 
@@ -53,7 +53,7 @@ def generate_target_html(ip, description, hops, settings, logger=None):
     log_path   = os.path.join(LOG_DIR, f"{ip}.log")
     trace_path = os.path.join(TRACE_DIR, f"{ip}.trace.txt")
 
-    # Tail logs
+    # Tail a few log lines (for operator context)
     logs = []
     if os.path.exists(log_path):
         try:
@@ -63,7 +63,7 @@ def generate_target_html(ip, description, hops, settings, logger=None):
         except Exception as e:
             logger.warning(f"Could not read logs for {ip}: {e}")
 
-    # Read traceroute (single snapshot for table)
+    # Snapshot traceroute table (optional helper)
     traceroute = []
     if os.path.exists(trace_path):
         try:
@@ -129,7 +129,6 @@ th, td { border: 1px solid #334155; padding: 6px 8px; text-align: left; }
   <h3>Traceroute</h3>
   <table><tr><th>Hop</th><th>Address</th><th>Details</th></tr>""")
 
-            # Basic traceroute table
             for idx, line in enumerate(traceroute, start=1):
                 parts = line.strip().split()
                 hop_ip  = parts[1] if len(parts) >= 2 else "???"
@@ -157,7 +156,7 @@ th, td { border: 1px solid #334155; padding: 6px 8px; text-align: left; }
 </div>
 
 <script>
-// Metrics (no 'varies' here — it's a hop property, not a metric)
+// Fixed labels for metrics
 const METRICS = """ + _json_array(METRICS) + """;
 const RANGES  = """ + _json_array([r["label"] for r in TIME_RANGES]) + """;
 const DATA_DIR = "data";
@@ -180,7 +179,6 @@ function fillSelectWithLabels(sel, keys, labelsMap) {
   sel.selectedIndex = 0;
 }
 
-// Build datasets AND also attach friendly legend/tooltip text per hop
 function buildDatasetsFromBundle(bundle, metric) {
   return (bundle.hops || []).map(h => {
     const varies = !!h.varies;
@@ -190,7 +188,9 @@ function buildDatasetsFromBundle(bundle, metric) {
       : (h.name || `${h.hop}: ?`);
     return {
       label,
-      _changes: Array.isArray(h.changes) ? h.changes : [],  // for tooltip
+      _changes: Array.isArray(h.changes_in_window) && h.changes_in_window.length
+                  ? h.changes_in_window
+                  : (Array.isArray(h.changes) ? h.changes : []),
       data: (h.metrics && h.metrics[metric]) ? h.metrics[metric] : [],
       borderColor: h.color || '#888',
       backgroundColor: h.color || '#888',
@@ -218,12 +218,13 @@ let chart = new Chart(ctx, {
             const it = items[0];
             if (!it) return '';
             const ds = it.chart.data.datasets[it.datasetIndex];
-            // If we have change records, add a second line with last-seen per IP.
             if (ds && Array.isArray(ds._changes) && ds._changes.length) {
-              const lastLine = ds._changes
-                .map(c => `${c.ip} — last: ${new Date((c.last||0)*1000).toLocaleString()}`)
-                .join(' • ');
-              return `${ds.label}\n${lastLine}`;
+              // Build a single extra line listing each IP with last-seen time.
+              const parts = ds._changes.map(c => {
+                const last = (c && c.last) ? new Date(c.last * 1000).toLocaleString() : '—';
+                return `${c.ip} — last: ${last}`;
+              });
+              return `${ds.label}\n${parts.join(' • ')}`;
             }
             return ds ? ds.label : '';
           },
