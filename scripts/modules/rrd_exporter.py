@@ -62,32 +62,26 @@ Writes <HTML_DIR>/data/<ip>_<label>.json with structure:
   "label": "<label>",
   "seconds": <int>,
   "step": <rrd_step_or_null>,
-  "timestamps": ["HH:MM", ...],      # local wall clock times
-  "epoch": [<epoch>, ...],           # exact timestamps used in the rows
+  "timestamps": ["HH:MM", ...],
+  "epoch": [<epoch>, ...],
   "rrd_window": {"start_epoch": ..., "end_epoch": ..., "step": ...},
   "hops": [
     {
       "hop": <int>,
-      "name": "N: <host>|varies (...)",
+      "name": "N: <host>|varies (...)|N: <host> (varies)",
       "color": "#rrggbb",
       "varies": <bool>,
-      "endpoints": ["ipA","ipB", ...],          # union over time from hop_ip_cache
-      "changes": [{"ip":"x","first":t1,"last":t2}, ...],  # full history from cache
-      "changes_in_window": [ ... ],             # same but clipped to rrd_window
+      "endpoints": ["ipA","ipB", ...],
+      "changes": [{"ip":"x","first":t1,"last":t2}, ...],
+      "changes_in_window": [ ... ],
       "metrics": {
-        "<ds_name>": [v1, v2, ...],             # one array per DS listed in settings
+        "<ds_name>": [v1, v2, ...],
         ...
       }
     },
     ...
   ]
 }
-
-Author’s note
--------------
-This file is designed to be **read-only** relative to traceroute artifacts.
-Only the monitor pipeline (via modules/graph_utils.save_trace_and_json) should
-write/update traceroute files. Keep that single-writer policy to avoid races.
 """
 
 import os
@@ -99,7 +93,7 @@ import rrdtool
 from datetime import datetime
 from typing import Dict, List, Tuple, Any, Optional
 
-from modules.graph_utils import get_labels                # read labels from <ip>_hops.json (or .trace.txt fallback)
+from modules.graph_utils import get_labels
 from modules.utils import resolve_html_dir, resolve_all_paths, setup_logger
 
 
@@ -108,15 +102,10 @@ from modules.utils import resolve_html_dir, resolve_all_paths, setup_logger
 # =============================================================================
 
 def _now_epoch() -> int:
-    """Return current epoch seconds (int)."""
     return int(time.time())
 
 
 def _color(hop_index: int) -> str:
-    """
-    Deterministic pseudo-unique color per hop index.
-    This is cosmetic for the consumer (Chart.js).
-    """
     r = int((1 + math.sin(hop_index * 0.3)) * 127)
     g = int((1 + math.sin(hop_index * 0.3 + 2)) * 127)
     b = int((1 + math.sin(hop_index * 0.3 + 4)) * 127)
@@ -124,7 +113,6 @@ def _color(hop_index: int) -> str:
 
 
 def _fmt_ts(epoch: int) -> str:
-    """Render an epoch as local 'HH:MM' (best-effort)."""
     try:
         return datetime.fromtimestamp(epoch).strftime("%H:%M")
     except Exception:
@@ -132,14 +120,10 @@ def _fmt_ts(epoch: int) -> str:
 
 
 def _nan_to_none(v):
-    """
-    Convert NaN / non-number to None for JSON cleanliness.
-    Always return a JSON-serializable numeric or None.
-    """
     try:
         if v is None:
             return None
-        if isinstance(v, float) and (v != v):  # NaN check
+        if isinstance(v, float) and (v != v):  # NaN
             return None
         return float(v)
     except Exception:
@@ -147,7 +131,6 @@ def _nan_to_none(v):
 
 
 def _ensure_dir(p: str) -> None:
-    """Create parent directory for a path (no error if it exists)."""
     os.makedirs(os.path.dirname(p), exist_ok=True)
 
 
@@ -155,30 +138,16 @@ def _ensure_dir(p: str) -> None:
 # Legend parsing
 # =============================================================================
 
-# Legend lines look like "N: ENDPOINT" or "N: varies (A, B, C)"
 LABEL_ENDPOINT_RE = re.compile(r"^\s*\d+\s*:\s*([^\s]+)")
 VARIES_RE         = re.compile(r"varies\s*\(([^)]+)\)", re.IGNORECASE)
 
 
 def _extract_endpoint(label_text: str) -> str:
-    """
-    Extract the single endpoint token from a legend like:
-        "3: 10.0.0.1"  -> "10.0.0.1"
-        "3: my.host"   -> "my.host"
-        "3: varies (...)" -> "varies" (not suitable for cache!)
-    NOTE: For 'varies (...)' labels, use _parse_varies_candidates instead.
-    """
     m = LABEL_ENDPOINT_RE.match(label_text or "")
     return m.group(1) if m else (label_text or "")
 
 
 def _parse_varies_candidates(label_text: str) -> List[str]:
-    """
-    If label contains 'varies ( ... )', return the comma-separated list inside.
-    Whitespace is trimmed; empty tokens are ignored.
-    Example:
-        "3: varies (192.0.2.1, 198.51.100.2)" -> ["192.0.2.1","198.51.100.2"]
-    """
     if not label_text:
         return []
     m = VARIES_RE.search(label_text)
@@ -198,10 +167,6 @@ def _parse_varies_candidates(label_text: str) -> List[str]:
 # =============================================================================
 
 def _strict_traceroute_dir(settings: dict, logger=None) -> Optional[str]:
-    """
-    Return settings['paths']['traceroute'] if it exists on disk; else log and return None.
-    This module does not use any fallback.
-    """
     d = (settings or {}).get("paths", {}).get("traceroute")
     if not d or not os.path.isdir(d):
         if logger:
@@ -211,16 +176,10 @@ def _strict_traceroute_dir(settings: dict, logger=None) -> Optional[str]:
 
 
 # =============================================================================
-# Hop-IP cache (with timestamps)
+# Hop-IP cache
 # =============================================================================
 
 def _cache_dir(paths: Dict[str, str], html_dir: str) -> str:
-    """
-    Return the cache base directory:
-      1) paths['cache'] if provided;
-      2) otherwise <HTML_DIR>/var/hop_ip_cache
-    The directory is created if missing.
-    """
     base = (paths or {}).get("cache")
     if not base:
         base = os.path.join(html_dir, "var", "hop_ip_cache")
@@ -229,22 +188,15 @@ def _cache_dir(paths: Dict[str, str], html_dir: str) -> str:
 
 
 def _cache_path(cache_dir: str, ip: str) -> str:
-    """Resolve the per-IP cache file path under cache_dir."""
     safe = re.sub(r"[^0-9A-Za-z_.-]", "_", ip)
     return os.path.join(cache_dir, f"{safe}.hopips.json")
 
 
 def _normalize_cache_entry_list(raw_val) -> List[Dict[str, Any]]:
-    """
-    Normalize a possibly old/loose representation into a list of
-    {ip, first, last} dicts, merging duplicates and repairing missing fields.
-    """
     out: List[Dict[str, Any]] = []
     now = _now_epoch()
     if not isinstance(raw_val, list):
         return out
-
-    # Convert whatever is there into a normalized list
     for v in raw_val:
         if isinstance(v, dict) and "ip" in v:
             ip = str(v.get("ip") or "")
@@ -257,8 +209,6 @@ def _normalize_cache_entry_list(raw_val) -> List[Dict[str, Any]]:
             ip = str(v or "")
             if ip:
                 out.append({"ip": ip, "first": now, "last": now})
-
-    # Merge duplicates by IP, preserving min(first) and max(last)
     merged: Dict[str, Dict[str, Any]] = {}
     for rec in out:
         ip = rec["ip"]
@@ -272,7 +222,6 @@ def _normalize_cache_entry_list(raw_val) -> List[Dict[str, Any]]:
 
 
 def _load_cache(cache_file: str) -> Dict[str, List[Dict[str, Any]]]:
-    """Load the per-IP hop cache from disk (normalize its structure)."""
     try:
         with open(cache_file, "r", encoding="utf-8") as f:
             data = json.load(f) or {}
@@ -285,7 +234,6 @@ def _load_cache(cache_file: str) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def _save_cache(cache_file: str, data: Dict[str, List[Dict[str, Any]]]) -> None:
-    """Persist the hop cache to disk (best-effort)."""
     try:
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         with open(cache_file, "w", encoding="utf-8") as f:
@@ -297,25 +245,16 @@ def _save_cache(cache_file: str, data: Dict[str, List[Dict[str, Any]]]) -> None:
 def _update_cache_with_current(cache: Dict[str, List[Dict[str, Any]]],
                                hops_legend: List[Tuple[int, str]],
                                max_values_per_hop: int = 20) -> Dict[str, bool]:
-    """
-    Update the cache using the CURRENT legend snapshot.
-    - For "N: X" labels → add/update endpoint X for hop N.
-    - For "N: varies (A, B, C)" labels → add/update ALL A/B/C for hop N.
-    Trim per-hop history length to max_values_per_hop.
-    Return a mapping { "<hop>": <bool_varies> } computed after the update.
-    """
     now = _now_epoch()
     varies_flags: Dict[str, bool] = {}
 
     for hop_index, label_text in hops_legend:
         key = str(int(hop_index))
         lst = cache.get(key, [])
-        lst = _normalize_cache_entry_list(lst)  # defensive normalize
+        lst = _normalize_cache_entry_list(lst)
 
-        # Parse "varies (...)" candidates if present; else fall back to single endpoint
         candidates = _parse_varies_candidates(label_text)
         if candidates:
-            # Add/update each candidate endpoint individually
             for ipval in candidates:
                 updated = False
                 for rec in lst:
@@ -337,7 +276,6 @@ def _update_cache_with_current(cache: Dict[str, List[Dict[str, Any]]],
                 if not updated:
                     lst.append({"ip": endpoint, "first": now, "last": now})
 
-        # Trim history (oldest by 'first' if over capacity)
         if len(lst) > max_values_per_hop:
             lst = sorted(lst, key=lambda r: int(r.get("first", 0)))[-max_values_per_hop:]
 
@@ -348,10 +286,6 @@ def _update_cache_with_current(cache: Dict[str, List[Dict[str, Any]]],
 
 
 def _clip_changes_to_window(changes, start_epoch: int, end_epoch: int) -> List[Dict[str, Any]]:
-    """
-    Intersect the [first,last] windows with [start_epoch, end_epoch).
-    Records fully outside the window are dropped.
-    """
     if not isinstance(changes, list):
         return []
     out: List[Dict[str, Any]] = []
@@ -375,37 +309,21 @@ def _clip_changes_to_window(changes, start_epoch: int, end_epoch: int) -> List[D
 # =============================================================================
 
 def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, logger=None) -> str:
-    """
-    Export a single <ip>/<label> JSON bundle from the IP’s RRD file.
-
-    Steps:
-      1) Resolve directories (RRD, HTML, cache) from settings.
-      2) Resolve legend labels via traceroute artifacts (<ip>_hops.json preferred).
-      3) Update per-hop cache (varies detection + endpoints union).
-      4) rrdtool.fetch(...) AVERAGE over [now - seconds, now].
-      5) Build the JSON structure and write to <HTML>/data/<ip>_<label>.json.
-
-    Returns
-    -------
-    str : path to the written JSON file (stub if RRD missing or fetch failed).
-    """
     logger = logger or setup_logger("rrd_exporter", settings=settings)
 
-    # ---- 1) Resolve directories
+    # Directories
     paths     = resolve_all_paths(settings)
     RRD_DIR   = paths["rrd"]
     HTML_DIR  = resolve_html_dir(settings)
     DATA_DIR  = os.path.join(HTML_DIR, "data")
     os.makedirs(DATA_DIR, exist_ok=True)
-    _ensure_dir(os.path.join(DATA_DIR, "x"))  # parent priming; harmless
+    _ensure_dir(os.path.join(DATA_DIR, "x"))
 
-    # Data source names (metrics) configured under settings['rrd']['data_sources']
     schema_metrics = [ds["name"] for ds in settings.get("rrd", {}).get("data_sources", []) if ds.get("name")]
 
     rrd_path = os.path.join(RRD_DIR, f"{ip}.rrd")
     out_path = os.path.join(DATA_DIR, f"{ip}_{label}.json")
 
-    # Stub output if the RRD is missing (keeps HTML happy)
     if not os.path.exists(rrd_path):
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump({"ip": ip, "label": label, "seconds": int(seconds),
@@ -414,23 +332,19 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         logger.error(f"[{ip}] RRD missing, wrote stub: {out_path}")
         return out_path
 
-    # ---- 2) Legend labels (STRICT traceroute path)
     traceroute_dir = _strict_traceroute_dir(settings, logger=logger)
     if traceroute_dir:
-        # get_labels() prefers <ip>_hops.json; falls back to <ip>.trace.txt if present
         hops_legend = get_labels(ip, traceroute_dir=traceroute_dir, settings=settings, logger=logger) or []
     else:
         hops_legend = []
         logger.error(f"[{ip}] No traceroute dir → hop labels & varies will be empty in {label}.")
 
-    # ---- 3) Update per-hop cache (varies & endpoints)
     cache_dir   = _cache_dir(paths, HTML_DIR)
     cache_file  = _cache_path(cache_dir, ip)
     cache_state = _load_cache(cache_file)
     varies_map  = _update_cache_with_current(cache_state, hops_legend)
     _save_cache(cache_file, cache_state)
 
-    # ---- 4) Fetch rows from the RRD
     end = int(time.time())
     start = end - int(seconds)
     try:
@@ -438,7 +352,6 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
             rrd_path, "AVERAGE", "--start", str(start), "--end", str(end)
         )
     except rrdtool.OperationalError as e:
-        # Write a stub so the frontend doesn’t break
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump({"ip": ip, "label": label, "seconds": int(seconds),
                        "step": None, "timestamps": [], "epoch": [],
@@ -446,7 +359,6 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         logger.error(f"[{ip}] fetch failed for {label}: {e}")
         return out_path
 
-    # Align epochs and rows
     step = int(f_step) if f_step else None
     epochs = list(range(int(f_start), int(f_end), step)) if step and step > 0 else list(range(len(rows)))
     if len(epochs) != len(rows):
@@ -457,16 +369,11 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
     name_to_idx = {name: i for i, name in enumerate(names or [])}
 
     def extract_series(ds_name: str) -> List[Optional[float]]:
-        """
-        Extract a single DS array (len == len(rows)), converting NaN→None.
-        Returns a list of floats/None in the same order as 'epochs'.
-        """
         col = name_to_idx.get(ds_name)
         if col is None:
             return [None] * len(rows)
         return [_nan_to_none(r[col]) if (isinstance(r, (list, tuple)) and len(r) > col) else None for r in rows]
 
-    # ---- 5) Build hop entries with changes windows and per-metric arrays
     hop_entries: List[Dict[str, Any]] = []
     window_start, window_end = int(f_start), int(f_end)
 
@@ -475,9 +382,14 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         full_changes = cache_state.get(key, [])
         clipped      = _clip_changes_to_window(full_changes, window_start, window_end)
 
+        # --- ensure legend shows variation clearly
+        name = str(label_text)
+        if varies_map.get(key, False) and "varies" not in name.lower():
+            name = f"{name} (varies)"
+
         entry = {
             "hop": int(hop_index),
-            "name": str(label_text),                     # e.g., "3: 10.0.0.1" or "3: varies (A, B)"
+            "name": name,
             "color": _color(int(hop_index)),
             "varies": bool(varies_map.get(key, False)),
             "endpoints": [rec["ip"] for rec in full_changes],
@@ -492,7 +404,6 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
 
         hop_entries.append(entry)
 
-    # Final JSON object
     out = {
         "ip": ip,
         "label": label,
