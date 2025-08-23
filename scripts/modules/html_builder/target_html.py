@@ -91,10 +91,10 @@ body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-
 .card header p{ margin:0; color:var(--muted); }
 .toolbar{ display:flex; gap:12px; align-items:center; justify-content:space-between; padding:12px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
 .legend{ display:flex; flex-wrap:wrap; gap:10px; }
-.legend .item{ display:flex; align-items:center; gap:8px; padding:6px 10px; background:var(--chip); border:1px solid var(--border); border-radius:999px; cursor:pointer; user-select:none; }
+.legend .item { display:flex; align-items:center; gap:8px; padding:6px 10px; background:var(--chip); border:1px solid var(--border); border-radius:999px; cursor:pointer; user-select:none; color: var(--text); }
 .legend .item.dim{ opacity:.35; }
 .legend .swatch{ width:12px; height:12px; border-radius:3px; border:1px solid #00000055; }
-.legend .badge{ font-size:10px; padding:2px 6px; border-radius:999px; border:1px dashed #00000055; background:var(--accent); color:#111827; }
+.legend .badge { font-size:10px; padding:2px 6px; border-radius:999px; border:1px dashed #00000055; background:var(--accent); color: var(--text); }
 .panel{ padding:16px 20px; }
 .note{ color:var(--muted); font-size:12px; margin-top:8px; }
 select{ background:#0b1220; color:#e5e7eb; border:1px solid var(--border); border-radius:8px; padding:6px 10px; }
