@@ -2,263 +2,410 @@
 """
 controller.py
 -------------
-Top‑level supervisor for the MTR_WEB project.
+Top-level supervisor for the MTR_WEB project.
 
-WHAT THIS SCRIPT DOES
+What this script does
 =====================
 1) Watches the two project YAML files at the repo root:
    - mtr_targets.yaml
    - mtr_script_settings.yaml
 
-2) Ensures there is ONE running child process (mtr_watchdog.py) per *active*
+2) Ensures there is **one running child process** (mtr_watchdog.py) per *active*
    target found in mtr_targets.yaml (targets with `paused: true` are not started).
 
-3) Periodically runs the "reporting pipeline" in order:
-     graph_generator.py  →  timeseries_exporter.py  →  html_generator.py  →  index_generator.py
-   The pipeline can also run immediately when YAML files change (configurable).
+3) Periodically runs the "reporting pipeline" **in order**:
+   - timeseries_exporter.py  → writes JSON bundles under <html>/data/
+   - graph_generator.py      → renders PNG/SVG under <html>/graphs/
+   - html_generator.py       → writes HTML pages under <html>/
 
-4) Hot‑reloads logging levels at runtime when mtr_script_settings.yaml changes
-   (no controller restart required). Uses modules.utils.setup_logger/refresh_logger_levels.
+This is a self-contained controller. It does not depend on helper classes from
+other modules, so it can be dropped into any tree as long as the shared utils
+module is available.
 
-USAGE
-=====
-    python3 scripts/controller.py
+Quick start
+-----------
+$ python3 scripts/controller.py --settings /opt/scripts/MTR_WEB/mtr_script_settings.yaml
 
-SYSTEMD EXAMPLE
-===============
-[Unit]
-Description=MTR WEB Monitoring Controller
-After=network.target
+Config knobs used
+-----------------
+- paths.*               → resolved via modules.utils.resolve_all_paths(settings)
+- logging.levels.*      → applied at runtime via modules.utils.refresh_logger_levels
+- controller.*          → optional controller behavior (see DEFAULTS below)
 
-[Service]
-WorkingDirectory=/opt/scripts/MTR_WEB
-ExecStart=/usr/bin/python3 scripts/controller.py
-Restart=always
-User=root
-Group=root
+Design notes
+------------
+• The controller keeps a dictionary {ip: Popen} for watchdogs and restarts any
+  that die unexpectedly while the target is still desired.
+• File change detection uses the mtime of the two YAML files and hot-reloads
+  settings + logger levels without restarting the controller.
+• Pipeline runs on a simple cadence (default 120s) and on settings reloads.
 
-[Install]
-WantedBy=multi-user.target
+This file is documented for readers with basic Python knowledge.
 """
 
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import logging
 import os
+import signal
+import subprocess
 import sys
 import time
-import yaml
-import signal
-import threading
-from typing import Dict, List, Optional
-from modules.utils import load_settings, setup_logger, refresh_logger_levels, resolve_all_paths  # add resolve_all_paths
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 # --- Make "scripts/modules" importable whether run via systemd or shell ---
 SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))
 MODULES_DIR = os.path.join(SCRIPTS_DIR, "modules")
 if MODULES_DIR not in sys.path:
     sys.path.insert(0, MODULES_DIR)
 
-# --- Imports from our shared/project modules ---
-from modules.utils import load_settings, setup_logger, refresh_logger_levels  # noqa: E402
-from modules.controller_utils import WatchdogManager                          # noqa: E402
-from modules.pipeline_utils import PipelineRunner                             # noqa: E402
-
-
-# ----------------------------
-# Paths (absolute)
-# ----------------------------
-REPO_ROOT     = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))  # repo root (one level above scripts/)
-CONFIG_FILE   = os.path.join(REPO_ROOT, "mtr_targets.yaml")            # targets list
-SETTINGS_FILE = os.path.join(REPO_ROOT, "mtr_script_settings.yaml")    # global settings
-
-# Child script paths (absolute)
-MONITOR_SCRIPT         = os.path.join(SCRIPTS_DIR, "mtr_watchdog.py")
-GRAPH_GENERATOR_SCRIPT = os.path.join(SCRIPTS_DIR, "graph_generator.py")
-TS_EXPORTER_SCRIPT     = os.path.join(SCRIPTS_DIR, "timeseries_exporter.py")
-HTML_GENERATOR_SCRIPT  = os.path.join(SCRIPTS_DIR, "html_generator.py")
-INDEX_GENERATOR_SCRIPT = os.path.join(SCRIPTS_DIR, "index_generator.py")
-
+# --- Imports from our shared/project modules (after sys.path tweak) ---
+from modules.utils import (  # noqa: E402
+    load_settings,
+    resolve_all_paths,
+    resolve_targets_path,
+    setup_logger,
+    refresh_logger_levels,
+)
 
 # ----------------------------
-# Small utilities (local)
+# Defaults and constants
 # ----------------------------
-def _safe_mtime(path: str) -> float:
-    """Return file modification time in seconds since epoch, or 0.0 if missing/inaccessible."""
+
+DEFAULTS = {
+    "loop_sleep_seconds": 1,            # idle sleep between iterations
+    "pipeline_interval_seconds": 120,   # run exporters/graphs/html at this cadence
+    "watchdog_restart_backoff": 2,      # seconds before restarting a crashed watchdog
+}
+
+SETTINGS_FILE_DEFAULT = os.path.join(PROJECT_ROOT, "mtr_script_settings.yaml")
+TARGETS_FILE_DEFAULT = os.path.join(PROJECT_ROOT, "mtr_targets.yaml")
+
+# ----------------------------
+# Helpers
+# ----------------------------
+
+def _now_iso() -> str:
+    return _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+def _mtime(path: str) -> float:
     try:
         return os.path.getmtime(path)
-    except Exception:
+    except FileNotFoundError:
         return 0.0
 
+def _read_targets(path: str) -> List[dict]:
+    """
+    Load targets from YAML. The file is expected to be a list of mappings like:
+      - ip: 8.8.8.8
+        label: Google DNS
+        paused: false
 
-def _load_targets(logger) -> List[Dict]:
+    Returns a list (possibly empty). Any malformed entries are skipped with a log.
     """
-    Read mtr_targets.yaml and normalize entries into:
-      { "ip": str, "description": str, "source_ip": Optional[str], "paused": bool }
-    Any rows missing 'ip' are ignored.
-    """
+    import yaml  # local import to keep top-level tidy
+
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        out: List[Dict] = []
-        for t in (data.get("targets") or []):
-            ip = str(t.get("ip", "")).strip()
-            if not ip:
-                continue
-            out.append({
-                "ip": ip,
-                "description": t.get("description", ""),
-                "source_ip": t.get("source_ip") or t.get("source"),
-                "paused": bool(t.get("paused", False)),
-            })
-        return out
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or []
+    except FileNotFoundError:
+        return []
     except Exception as e:
-        logger.error(f"Failed to read {CONFIG_FILE}: {e}")
+        logging.getLogger("controller").error("Failed to parse %s: %s", path, e)
         return []
 
-
-def _read_controller_policy(settings: Dict, logger) -> Dict:
-    """
-    Pull controller policy from YAML with backward‑compatible keys.
-
-    Recognized keys (preferred):
-      controller.loop_seconds
-      controller.pipeline_every_seconds
-      controller.rerun_pipeline_on_changes
-
-    Backward‑compatible fallbacks if present:
-      controller.scan_interval_seconds (alias of loop_seconds)
-      controller.pipeline_run_every_seconds (alias of pipeline_every_seconds)
-      controller.pipeline_run_on_change (alias of rerun_pipeline_on_changes)
-    """
-    cfg = (settings.get("controller") or {})
-
-    # Prefer new keys; fall back to older aliases if present.
-    loop_seconds = int(cfg.get("loop_seconds",
-                        cfg.get("scan_interval_seconds", 2)))  # default 2s
-
-    pipeline_every_seconds = int(cfg.get("pipeline_every_seconds",
-                                  cfg.get("pipeline_run_every_seconds", 60)))  # default 60s
-
-    rerun_on_change = bool(cfg.get("rerun_pipeline_on_changes",
-                             cfg.get("pipeline_run_on_change", True)))  # default True
-
-    logger.debug(f"controller policy: loop_seconds={loop_seconds}, "
-                 f"pipeline_every_seconds={pipeline_every_seconds}, "
-                 f"rerun_on_change={rerun_on_change}")
-
-    return {
-        "loop_seconds": loop_seconds,
-        "pipeline_every_seconds": pipeline_every_seconds,
-        "rerun_on_change": rerun_on_change,
-    }
-
+    out: List[dict] = []
+    if isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            ip = str(row.get("ip") or "").strip()
+            if not ip:
+                continue
+            paused = bool(row.get("paused") or False)
+            out.append({"ip": ip, "label": row.get("label") or ip, "paused": paused})
+    return out
 
 # ----------------------------
-# Main entrypoint
+# Watchdog supervisor
 # ----------------------------
-def main() -> int:
-    # 1) Load settings (controls logging behavior) and create the 'controller' logger
+
+@dataclass
+class Child:
+    ip: str
+    popen: subprocess.Popen
+    started_at: float
+
+class WatchdogSupervisor:
+    """
+    Maintains one mtr_watchdog.py child per desired IP.
+    """
+
+    def __init__(self, settings: dict, logs_dir: str, logger: logging.Logger) -> None:
+        self.settings = settings
+        self.logs_dir = logs_dir
+        self.logger = logger
+        self.children: Dict[str, Child] = {}
+        self.desired: Set[str] = set()
+        self.backoff = int(self._get("controller.watchdog_restart_backoff",
+                                     DEFAULTS["watchdog_restart_backoff"]))
+
+    def _get(self, dotted_key: str, default):
+        # dotted access into settings
+        cur = self.settings
+        for part in dotted_key.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return default
+        return cur
+
+    def set_settings(self, settings: dict) -> None:
+        self.settings = settings
+        # Update backoff in case it changed
+        self.backoff = int(self._get("controller.watchdog_restart_backoff",
+                                     DEFAULTS["watchdog_restart_backoff"]))
+
+    def set_desired(self, ips: Iterable[str]) -> None:
+        self.desired = set(ips)
+
+    def sync(self) -> None:
+        """
+        Make reality match self.desired:
+        • start missing
+        • stop extra
+        • restart crashed ones
+        """
+        # Start missing
+        for ip in sorted(self.desired):
+            if ip not in self.children:
+                self._start(ip)
+
+        # Stop extra
+        for ip in list(self.children.keys()):
+            if ip not in self.desired:
+                self._stop(ip)
+
+        # Restart crashed
+        for ip, child in list(self.children.items()):
+            if child.popen.poll() is not None:  # process exited
+                rc = child.popen.returncode
+                self.logger.warning("Watchdog for %s exited rc=%s; restarting if still desired.", ip, rc)
+                self._stop(ip, already_dead=True)
+                if ip in self.desired:
+                    time.sleep(self.backoff)
+                    self._start(ip)
+
+    def stop_all(self) -> None:
+        for ip in list(self.children.keys()):
+            self._stop(ip)
+
+    def _start(self, ip: str) -> None:
+        cmd = [
+            sys.executable,
+            os.path.join(SCRIPTS_DIR, "mtr_watchdog.py"),
+            "--target", ip,
+            "--settings", SETTINGS_FILE,  # use current global path
+        ]
+        log_path = os.path.join(self.logs_dir, f"watchdog_{ip.replace('.', '_')}.log")
+        self.logger.info("Started watchdog for %s (log: %s) args=%s", ip, log_path, cmd)
+        lf = open(log_path, "a", buffering=1, encoding="utf-8")
+        lf.write(f"{_now_iso()} START {os.path.basename(cmd[1])} {ip}\n")
+        pop = subprocess.Popen(cmd, stdout=lf, stderr=lf)
+        self.children[ip] = Child(ip=ip, popen=pop, started_at=time.time())
+
+    def _stop(self, ip: str, already_dead: bool = False) -> None:
+        child = self.children.pop(ip, None)
+        if not child:
+            return
+        if already_dead:
+            self.logger.info("Watchdog %s already exited.", ip)
+            return
+        self.logger.info("Stopping watchdog for %s …", ip)
+        try:
+            child.popen.terminate()
+            try:
+                child.popen.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.logger.warning("Watchdog %s did not exit; killing.", ip)
+                child.popen.kill()
+        except Exception as e:
+            self.logger.error("Error stopping watchdog %s: %s", ip, e)
+
+# ----------------------------
+# Pipeline runner
+# ----------------------------
+
+class Pipeline:
+    """
+    Runs the three reporting scripts in sequence and writes a per-phase pipeline log.
+    """
+
+    def __init__(self, logs_dir: str, logger: logging.Logger) -> None:
+        self.logs_dir = logs_dir
+        self.logger = logger
+
+    def run_once(self) -> None:
+        phases = [
+            ("timeseries_exporter.py", []),
+            ("graph_generator.py", []),
+            ("html_generator.py", []),
+        ]
+        for script, extra_args in phases:
+            self._run_phase(script, extra_args)
+
+    def _run_phase(self, script: str, extra_args: List[str]) -> None:
+        script_path = os.path.join(SCRIPTS_DIR, script)
+        log_path = os.path.join(self.logs_dir, f"pipeline_{script}.log")
+        cmd = [sys.executable, script_path, "--settings", SETTINGS_FILE, *extra_args]
+
+        # Short console note and a header inside the pipeline log
+        self.logger.info("[pipeline] Running %s …  (log: %s)", script, log_path)
+        with open(log_path, "a", buffering=1, encoding="utf-8") as lf:
+            lf.write(f"\n=== {_now_iso()} | START {script} ===\n")
+            lf.write(f"$ {' '.join(cmd)}\n")
+            rc = 0
+            try:
+                proc = subprocess.Popen(cmd, stdout=lf, stderr=lf)
+                rc = proc.wait()
+            except Exception as e:
+                lf.write(f"[controller] Failed starting {script}: {e}\n")
+                rc = 1
+
+        # Summarise to controller log, and tail any error from the phase log on failure
+        if rc == 0:
+            self.logger.info("[pipeline] %s OK", script)
+        else:
+            self.logger.error("[pipeline] %s failed with rc=%d", script, rc)
+            try:
+                tail = self._tail_file(log_path, 25)
+                if tail.strip():
+                    self.logger.error("[pipeline] --- tail of %s ---\n%s\n[pipeline] --- end tail ---",
+                                      log_path, tail)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _tail_file(path: str, lines: int) -> str:
+        """Return the last N lines of a text file."""
+        data = []
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                data.append(line.rstrip("\n"))
+        return "\n".join(data[-lines:])
+
+# ----------------------------
+# Main
+# ----------------------------
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="MTR_WEB controller (supervisor)")
+    ap.add_argument("--settings", default=SETTINGS_FILE_DEFAULT,
+                    help="Path to mtr_script_settings.yaml (default: %(default)s)")
+    return ap.parse_args(argv)
+
+def main(argv: Optional[List[str]] = None) -> int:
+    global SETTINGS_FILE  # used by WatchdogSupervisor/Pipeline to re-use current path
+    args = parse_args(argv)
+    SETTINGS_FILE = os.path.abspath(args.settings)
+
+    # 1) Load settings + resolve paths
     settings = load_settings(SETTINGS_FILE)
     paths = resolve_all_paths(settings)
+
+    # 2) Logging
     logger = setup_logger("controller", settings=settings)
+    # Apply runtime levels immediately (2-arg form: registry, settings)
+    refresh_logger_levels({"controller": logger}, settings)
 
-    # 2) Instantiate helpers
-    watchdogs = WatchdogManager(
-        repo_root=REPO_ROOT,
-        monitor_script=MONITOR_SCRIPT,
-        settings_file=SETTINGS_FILE,
-        logger=logger
-    )
-    pipeline = PipelineRunner(
-        repo_root=REPO_ROOT,
-        scripts=[
-            GRAPH_GENERATOR_SCRIPT,
-            TS_EXPORTER_SCRIPT,
-            HTML_GENERATOR_SCRIPT,
-            INDEX_GENERATOR_SCRIPT,
-        ],
-        settings_file=SETTINGS_FILE,
-        logger=logger
-    )
+    logs_dir = paths.get("logs") or os.path.join(PROJECT_ROOT, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
 
-    # 3) Initial state
-    policy = _read_controller_policy(settings, logger)
-    loop_seconds = policy["loop_seconds"]
-    pipeline_every_seconds = policy["pipeline_every_seconds"]
-    rerun_on_change = policy["rerun_on_change"]
+    # 3) Note schema
+    schema = settings.get("rrd", {}).get("data_sources")
+    if isinstance(schema, list):
+        names = ", ".join(str(s.get("name")) for s in schema if isinstance(s, dict) and s.get("name"))
+        if names:
+            logger.info("Schema metrics: %s", names)
 
-    last_targets_mtime  = _safe_mtime(CONFIG_FILE)
-    last_settings_mtime = _safe_mtime(SETTINGS_FILE)
-    last_pipeline_ts    = 0.0
+    # 4) Setup helpers
+    pipeline_interval = int(settings.get("controller", {}).get(
+        "pipeline_interval_seconds", DEFAULTS["pipeline_interval_seconds"]))
+    loop_sleep = int(settings.get("controller", {}).get(
+        "loop_sleep_seconds", DEFAULTS["loop_sleep_seconds"]))
 
-    targets = _load_targets(logger)
-    logger.info(f"Loaded {len(targets)} targets from mtr_targets.yaml")
-    watchdogs.reconcile(targets)
+    watchdogs = WatchdogSupervisor(settings=settings, logs_dir=logs_dir, logger=logger)
+    pipeline = Pipeline(logs_dir=logs_dir, logger=logger)
 
-    # 4) Clean shutdown support
-    stop_evt = threading.Event()
+    # 5) Initial target set + mtimes
+    targets_file = resolve_targets_path(settings) or TARGETS_FILE_DEFAULT
+    settings_mtime = _mtime(SETTINGS_FILE)
+    targets_mtime = _mtime(targets_file)
 
-    def _sig_handler(signum, _frame):
-        logger.info(f"Signal {signum} received; stopping controller…")
-        stop_evt.set()
+    desired_ips = [t["ip"] for t in _read_targets(targets_file) if not t.get("paused")]
+    watchdogs.set_desired(desired_ips)
+    watchdogs.sync()  # start initial set
 
-    signal.signal(signal.SIGINT, _sig_handler)
-    signal.signal(signal.SIGTERM, _sig_handler)
+    last_pipeline = 0.0
 
-    # 5) Main loop
-    while not stop_evt.is_set():
-        try:
-            # Settings hot‑reload
-            curr_settings_mtime = _safe_mtime(SETTINGS_FILE)
-            if curr_settings_mtime != last_settings_mtime:
-                settings = load_settings(SETTINGS_FILE)
-                refresh_logger_levels(logger, "controller", settings)
-                last_settings_mtime = curr_settings_mtime
-                logger.info("Settings reloaded; 'controller' log level refreshed.")
+    logger.info("Controller started. Watching settings: %s and targets: %s", SETTINGS_FILE, targets_file)
 
-                # Apply any policy changes at runtime
-                policy = _read_controller_policy(settings, logger)
-                loop_seconds = policy["loop_seconds"]
-                pipeline_every_seconds = policy["pipeline_every_seconds"]
-                rerun_on_change = policy["rerun_on_change"]
+    # 6) Main loop
+    try:
+        while True:
+            try:
+                # Reload settings if changed
+                sm = _mtime(SETTINGS_FILE)
+                if sm != settings_mtime:
+                    settings = load_settings(SETTINGS_FILE)
+                    paths = resolve_all_paths(settings)
+                    refresh_logger_levels({"controller": logger}, settings)
+                    watchdogs.set_settings(settings)
+                    pipeline_interval = int(settings.get("controller", {}).get(
+                        "pipeline_interval_seconds", DEFAULTS["pipeline_interval_seconds"]))
+                    loop_sleep = int(settings.get("controller", {}).get(
+                        "loop_sleep_seconds", DEFAULTS["loop_sleep_seconds"]))
+                    settings_mtime = sm
+                    logger.info("Settings reloaded; 'controller' log level refreshed.")
 
-                if rerun_on_change:
-                    logger.info("Running pipeline due to settings change.")
-                    if pipeline.run_all():
-                        last_pipeline_ts = time.time()
+                # Reload targets if changed
+                tf = resolve_targets_path(settings) or targets_file
+                if tf != targets_file:
+                    targets_file = tf
+                    targets_mtime = 0.0  # force a reload next block
+                tm = _mtime(targets_file)
+                if tm != targets_mtime:
+                    targets_mtime = tm
+                    desired_ips = [t["ip"] for t in _read_targets(targets_file) if not t.get("paused")]
+                    watchdogs.set_desired(desired_ips)
 
-            # Targets file hot‑reload
-            curr_targets_mtime = _safe_mtime(CONFIG_FILE)
-            if curr_targets_mtime != last_targets_mtime:
-                targets = _load_targets(logger)
-                last_targets_mtime = curr_targets_mtime
-                logger.info(f"Targets changed; reconciling {len(targets)} targets.")
-                watchdogs.reconcile(targets)
-                if rerun_on_change:
-                    logger.info("Running pipeline due to targets change.")
-                    if pipeline.run_all():
-                        last_pipeline_ts = time.time()
+                # Ensure watchdogs match desired state (and restart crashed ones)
+                watchdogs.sync()
 
-            # Periodic pipeline schedule
-            now = time.time()
-            if (now - last_pipeline_ts) >= max(5, pipeline_every_seconds):
-                logger.debug("Time‑based pipeline trigger.")
-                if pipeline.run_all():
-                    last_pipeline_ts = now
+                # Run pipeline on cadence
+                now = time.time()
+                if (now - last_pipeline) >= pipeline_interval:
+                    pipeline.run_once()
+                    last_pipeline = now
 
-            # Reap/restart dead watchdogs
-            watchdogs.reap_and_restart(desired_targets=targets)
+                time.sleep(loop_sleep)
+            except Exception as e:
+                # Non-fatal: log and continue with a short back-off to avoid tight loop
+                logger.error("Controller loop error: %s", e)
+                time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt, shutting down.")
+    finally:
+        # Stop all watchdogs
+        logger.info("Stopping all watchdogs…")
+        watchdogs.stop_all()
+        logger.info("Controller stopped.")
 
-            # Idle wait
-            stop_evt.wait(timeout=loop_seconds)
-
-        except Exception as e:
-            # Non‑fatal: log and continue with a short back‑off to avoid tight loop
-            logger.error(f"Controller loop error: {e}")
-            time.sleep(1)
-
-    # 6) Shutdown: stop all watchdogs
-    logger.info("Stopping all watchdogs…")
-    watchdogs.stop_all()
-    logger.info("Controller stopped.")
     return 0
 
 
