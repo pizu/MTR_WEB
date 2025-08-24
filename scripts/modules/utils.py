@@ -288,17 +288,30 @@ def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
     """
     Return a sanitized, sorted list of time ranges for UI/exports.
 
-    Accepts either:
-      - list of dicts: [{"label":"1h","seconds":3600}, ...]
-      - mapping: {"1h": 3600, "24h": 86400}
-      - fallback strings "label:seconds" (e.g., "1h:3600")
+    Supports both the new and old config shapes:
+      NEW (preferred):
+        settings['html']['time_ranges'] = [
+          {"label":"1h","seconds":3600}, {"label":"24h","seconds":86400}, ...
+        ]
+      OLD:
+        settings['graph_time_ranges'] = same as above
+        settings['graph_time_ranges'] = {"1h": 3600, "24h": 86400}
+        settings['graph_time_ranges'] = ["1h:3600", "24h:86400"]
 
     De-duplicates by label (first wins) and sorts ascending by seconds.
     """
-    raw = settings.get("graph_time_ranges") or []
+    # Prefer the new location first
+    html_cfg = settings.get("html", {}) or {}
+    raw = html_cfg.get("time_ranges")
+
+    # Back-compat fallbacks
+    if not raw:
+        raw = settings.get("graph_time_ranges") or settings.get("time_ranges") or []
+
     out: List[Dict[str, int]] = []
     seen = set()
 
+    # Mapping form: {"1h": 3600, "24h": 86400}
     if isinstance(raw, dict):
         for k, v in raw.items():
             label = str(k).strip()
@@ -311,15 +324,20 @@ def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
             seen.add(label)
             out.append({"label": label, "seconds": seconds})
 
+    # List form(s)
     elif isinstance(raw, list):
         for row in raw:
             label, seconds = None, None
+
+            # Dict items: {"label": "...", "seconds": N}
             if isinstance(row, dict):
                 label = str(row.get("label") or "").strip()
                 try:
                     seconds = int(row.get("seconds"))
                 except Exception:
                     seconds = None
+
+            # String items: "1h:3600"
             elif isinstance(row, str) and ":" in row:
                 a, b = row.split(":", 1)
                 label = a.strip()
@@ -328,14 +346,15 @@ def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
                 except Exception:
                     seconds = None
 
+            # Ignore anything else
             if not label or not seconds or seconds <= 0 or label in seen:
                 continue
             seen.add(label)
             out.append({"label": label, "seconds": seconds})
 
+    # Sort by seconds
     out.sort(key=lambda r: r["seconds"])
     return out
-
 
 def resolve_html_knobs(settings: Dict[str, Any]) -> tuple[int, int]:
     """
