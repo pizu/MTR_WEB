@@ -8,7 +8,7 @@ Responsibilities (high-level)
 -----------------------------
 1) Load settings + targets from the repo root YAML files:
      - mtr_script_settings.yaml
-     - mtr_targets.yaml
+     - mtr_targets.yaml (path may be overridden via settings.files.targets)
 
 2) Maintain exactly one running watchdog per *active* target.
    - Child script: scripts/mtr_watchdog.py
@@ -21,8 +21,7 @@ Responsibilities (high-level)
 
 4) Hot‑reload logging levels when settings change (no restart).
 
-This file deliberately delegates “plumbing” to modules/controller_utils.py
-so it stays small and easy to reason about.
+This file delegates plumbing to modules/controller_utils.py so it stays small and clear.
 """
 
 from __future__ import annotations
@@ -40,7 +39,6 @@ if MODULES_DIR not in sys.path:
 
 # Project root and important files (repo root = parent of scripts/)
 REPO_ROOT     = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))
-CONFIG_FILE   = os.path.join(REPO_ROOT, "mtr_targets.yaml")
 SETTINGS_FILE = os.path.join(REPO_ROOT, "mtr_script_settings.yaml")
 LOG_DIR       = os.path.join(REPO_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -52,17 +50,18 @@ MONITOR_SCRIPT = os.path.join(SCRIPTS_DIR, "mtr_watchdog.py")
 from modules.utils import (  # noqa: E402
     load_settings,
     setup_logger,
-    refresh_logger_levels,   # uses signature: refresh_logger_levels(settings, logger_names=None)
     resolve_all_paths,
 )
 
-# --- New controller helpers (this refactor) ---
+# --- Controller helpers (centralized plumbing) ---
 from modules.controller_utils import (  # noqa: E402
     ControllerPolicy,
     ConfigWatcher,
     PipelineRunner,
     WatchdogManager,
     load_targets as cu_load_targets,
+    refresh_logging_from_settings,
+    targets_path,
 )
 
 # --------------------------------------------------------------------------------------
@@ -70,19 +69,30 @@ from modules.controller_utils import (  # noqa: E402
 # --------------------------------------------------------------------------------------
 
 class Controller:
-    def __init__(self, logger, settings):
-        self.logger   = logger
-        self.settings = settings
-        self.paths    = resolve_all_paths(self.settings)
+    def __init__(self, logger, settings, config_file: str):
+        """
+        Parameters
+        ----------
+        logger : logging.Logger
+            Logger created via modules.utils.setup_logger("controller", settings=...).
+        settings : dict
+            Loaded YAML via modules.utils.load_settings(...).
+        config_file : str
+            Absolute path to the targets YAML (resolved via controller_utils.targets_path()).
+        """
+        self.logger      = logger
+        self.settings    = settings
+        self.config_file = config_file
+        self.paths       = resolve_all_paths(self.settings)
 
-        # Policy (loop timing, pipeline schedule, rerun on change)
+        # Policy (loop timing, pipeline cadence, rerun on change)
         self.policy = ControllerPolicy.from_settings(self.settings, self.logger)
 
         # Watch what matters
-        self.watcher = ConfigWatcher(settings_file=SETTINGS_FILE, targets_file=CONFIG_FILE)
+        self.watcher = ConfigWatcher(settings_file=SETTINGS_FILE, targets_file=self.config_file)
 
         # Keep the current desired_targets cached (list of dicts)
-        self.desired_targets = cu_load_targets(CONFIG_FILE, self.logger)
+        self.desired_targets = cu_load_targets(self.config_file, self.logger)
 
         # Child managers
         self.watchdogs = WatchdogManager(
@@ -105,19 +115,42 @@ class Controller:
         self._last_pipeline_ts = 0.0
 
         # Initial reconcile
+        self.logger.info(f"Using targets file: {self.config_file}")
         self.logger.info(f"Loaded {len(self.desired_targets)} targets from mtr_targets.yaml")
         self.watchdogs.reconcile(self.desired_targets)
 
     # ---------- internal helpers ----------
 
     def _maybe_reload_settings(self):
-        """Reload settings; refresh logger levels; update policy; optionally run pipeline."""
+        """
+        Reload settings when mtr_script_settings.yaml changes; refresh logging via utils;
+        update policy; re-resolve targets path (files.targets) if needed; optionally run pipeline.
+        """
         if self.watcher.settings_changed():
+            # Re-read settings
             self.settings = load_settings(SETTINGS_FILE)
-            # IMPORTANT: use utils.refresh_logger_levels signature (no 'logger=' kw)
-            refresh_logger_levels(settings=self.settings)
+
+            # Centralized logging refresh (delegates to modules.utils.refresh_logger_levels)
+            refresh_logging_from_settings(self.settings)
+
+            # Policy changes
             self.policy = ControllerPolicy.from_settings(self.settings, self.logger)
             self.logger.info("Settings reloaded; logger levels + controller policy refreshed.")
+
+            # Targets path might change when settings change (files.targets)
+            new_cfg_path = targets_path(self.settings)
+            if new_cfg_path != self.config_file:
+                self.logger.info(f"Targets path changed: {self.config_file} → {new_cfg_path}")
+                self.config_file = new_cfg_path
+                # Repoint watcher to the new targets path by resetting its mtime baseline
+                self.watcher = ConfigWatcher(settings_file=SETTINGS_FILE, targets_file=self.config_file)
+                # Force immediate reload to reconcile with the new file
+                self.desired_targets = cu_load_targets(self.config_file, self.logger)
+                self.watchdogs.reconcile(self.desired_targets)
+                if self.policy.rerun_on_change:
+                    self.logger.info("Running pipeline due to targets file change.")
+                    if self.pipeline.run_all():
+                        self._last_pipeline_ts = time.time()
 
             if self.policy.rerun_on_change:
                 self.logger.info("Running pipeline due to settings change.")
@@ -125,9 +158,9 @@ class Controller:
                     self._last_pipeline_ts = time.time()
 
     def _maybe_reload_targets(self):
-        """Reload targets, reconcile watchdogs, optionally run pipeline."""
+        """Reload targets when the targets YAML changes; reconcile watchdogs; optionally run pipeline."""
         if self.watcher.targets_changed():
-            self.desired_targets = cu_load_targets(CONFIG_FILE, self.logger)
+            self.desired_targets = cu_load_targets(self.config_file, self.logger)
             self.logger.info(f"Targets changed; reconciling {len(self.desired_targets)} targets.")
             self.watchdogs.reconcile(self.desired_targets)
 
@@ -164,13 +197,17 @@ def main() -> int:
     logger = setup_logger("controller", settings=settings)
     paths = resolve_all_paths(settings)
 
+    # Resolve targets file from settings (files.targets) or default (next to settings)
+    cfg_file = targets_path(settings)
+
     logger.info("Controller starting…")
     logger.info(f"Repo root   : {REPO_ROOT}")
     logger.info(f"Scripts dir : {SCRIPTS_DIR}")
     logger.info(f"RRD dir     : {paths.get('rrd')}")
     logger.info(f"HTML dir    : {paths.get('html')}")
+    logger.info(f"Targets file: {cfg_file}")
 
-    ctl = Controller(logger=logger, settings=settings)
+    ctl = Controller(logger=logger, settings=settings, config_file=cfg_file)
 
     # Clean shutdown support
     stop_evt = threading.Event()
