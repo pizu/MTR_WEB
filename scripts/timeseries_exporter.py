@@ -209,16 +209,27 @@ def main(argv: List[str] | None = None) -> int:
         return 0
 
     # IP list
-    if args.ip:
-        ips = [t["ip"] for t in targets if t.get("ip") and t["ip"] != "mtr_settings"]
-    else:
-        targets_file = resolve_targets_path(settings)
-        targets = _load_targets_from_file(targets_file, logger)
-        ips = [t["ip"] for t in targets]
+    ef _discover_rrd_ips_from_dir(rrd_dir: str):
+    if not rrd_dir or not os.path.isdir(rrd_dir):
+        return []
+    return sorted({os.path.splitext(n)[0] for n in os.listdir(rrd_dir) if n.endswith(".rrd")})
 
+if args.ip:
+    ips = [args.ip]
+else:
+    ips = [t.get("ip") for t in targets if t.get("ip") and t["ip"] != "mtr_settings"]
+    seen = set()
+    ips = [ip for ip in ips if not (ip in seen or seen.add(ip))]
     if not ips:
-        logger.warning("No targets to export (no --ip given and targets file empty/missing).")
-        return 0
+        from modules.utils import resolve_all_paths
+        rrd_dir = resolve_all_paths(settings)["rrd"]
+        ips = _discover_rrd_ips_from_dir(rrd_dir)
+        if ips:
+            logger.warning(f"No valid targets; falling back to RRD scan ({len(ips)} ip(s)).")
+        else:
+            logger.warning("No targets and no RRDs found; nothing to export.")
+            return 0
+
 
     out_dir = os.path.join(html_dir, "data")
     logger.info(f"Exporting {len(ips)} IP(s) over {len(ranges)} time range(s) into {out_dir}")
