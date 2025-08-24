@@ -421,20 +421,42 @@ def _level_from_name(name: Optional[str], default: int = logging.INFO) -> int:
 
 
 def setup_logger(
-     name: str,
-     settings: Optional[Dict[str, Any]] = None,
-     logfile: Optional[str] = None,
-     level_override: Optional[str] = None,
-     max_bytes: int = 10 * 1024 * 1024,  # 10 MiB per file
-     backup_count: int = 5,
- ) -> logging.Logger:
-     """
-     Create (or retrieve) a logger that writes to the central logs directory.
-     Adds both a rotating file handler (if settings are available) and a console handler.
-     """
+    name: str,
+    settings: Optional[Dict[str, Any]] = None,
+    logfile: Optional[str] = None,
+    level_override: Optional[str] = None,
+    max_bytes: int = 10 * 1024 * 1024,  # 10 MiB per file
+    backup_count: int = 5,
+    *,
+    auto_refresh: bool = True,  # NEW: auto-apply YAML levels to related loggers
+) -> logging.Logger:
+    """
+    Create (or retrieve) a logger that writes to the central logs directory.
+    - Always enforces the level derived from YAML (or level_override).
+    - Retunes existing handlers if logger already exists.
+    - Adds a rotating file handler (when settings provided) and a console handler.
+    - Optionally auto-refreshes logger levels via refresh_logger_levels().
+
+    Parameters
+    ----------
+    name : str
+        Logger name (e.g. 'controller', 'timeseries_exporter').
+    settings : dict | None
+        Project settings (YAML). When provided, file handler goes to paths.logs.
+    logfile : str | None
+        Custom log file path (overrides default <logs>/<name>.log).
+    level_override : str | None
+        Force a level name regardless of YAML (e.g. 'DEBUG').
+    max_bytes : int
+        RotatingFileHandler maxBytes.
+    backup_count : int
+        RotatingFileHandler backupCount.
+    auto_refresh : bool
+        If True, call refresh_logger_levels(settings, [name,'modules','paths']) after setup.
+    """
     logger = logging.getLogger(name)
 
-    # Compute base level from YAML logging_levels (or default INFO)
+    # Base level from YAML (or override)
     default_level = logging.INFO
     if settings:
         levels = settings.get("logging_levels", {}) or {}
@@ -444,47 +466,56 @@ def setup_logger(
     if level_override:
         default_level = _level_from_name(level_override, default_level)
 
-    # Always enforce the level, even if handlers already exist.
+    # Always enforce level on logger and any existing handlers
     logger.setLevel(default_level)
-    logger.propagate = False  # do not duplicate to root
-
-    # If handlers already exist (e.g., previous init in-process), just retune them and return.
+    logger.propagate = False
     if logger.handlers:
         for h in logger.handlers:
             try:
                 h.setLevel(default_level)
             except Exception:
                 pass
+        # Optionally auto-refresh related loggers’ levels too
+        if auto_refresh and settings:
+            try:
+                refresh_logger_levels(settings, [name, "modules", "paths"])
+            except Exception:
+                pass
         return logger
 
-    # Formatter (timestamps + level + message)
+    # Formatter
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
 
-    # File handler (to central logs dir) if settings present
+    # File handler (when settings available)
     if settings:
         all_paths = resolve_all_paths(settings)
         logs_dir = all_paths["logs"] or _expand("./logs")
         _mkdir_p(logs_dir)
-
         if not logfile:
             logfile = os.path.join(logs_dir, f"{name}.log")
-
         fh = RotatingFileHandler(logfile, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
         fh.setLevel(default_level)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
 
-    # Console handler (always add one)
+    # Console handler
     ch = logging.StreamHandler(stream=sys.stdout)
     ch.setLevel(default_level)
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
     logger.debug(f"Logger '{name}' initialized at level {logging.getLevelName(default_level)}")
-    return logger
 
+    # Optionally auto-refresh related names so YAML changes take effect immediately
+    if auto_refresh and settings:
+        try:
+            refresh_logger_levels(settings, [name, "modules", "paths"])
+        except Exception:
+            pass
+
+    return logger
 
 def refresh_logger_levels(settings: Dict[str, Any], logger_names: Optional[List[str]] = None) -> None:
     """
