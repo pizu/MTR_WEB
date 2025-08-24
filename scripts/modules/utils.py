@@ -6,54 +6,56 @@ modules/utils.py
 
 Shared utilities for the MTR_WEB project.
 
-Key responsibilities
---------------------
-- Load and normalize YAML settings.
-- Resolve all key directories with a STRICT policy for the traceroute path
-  (YAML only; no environment or legacy fallbacks; do not auto-create).
-- Provide logging helpers (rotating file + console), with a live-level refresher.
-- Provide HTML/graph helpers for time ranges and a convenience "canvas" bundle.
-- Provide targets file resolution for exporters/controllers.
+What this module provides
+-------------------------
+- Settings I/O:
+    * load_settings(path) -> dict
 
-Minimum expected YAML
----------------------
-paths:
-  rrd: /opt/scripts/MTR_WEB/data
-  graphs: /opt/scripts/MTR_WEB/html/graphs
-  html: /opt/scripts/MTR_WEB/html
-  logs: /opt/scripts/MTR_WEB/logs
-  traceroute: /opt/scripts/MTR_WEB/traceroute
-  # cache (optional): /opt/scripts/MTR_WEB/html/var/hop_ip_cache
+- Paths (strict + consistent):
+    * resolve_all_paths(settings) -> dict with: html, graphs, logs, rrd, traceroute, cache
+      - html/graphs/logs/cache are created if missing
+      - rrd and traceroute are inputs; we DO NOT create them
+      - traceroute is STRICTLY taken from YAML (no env / no legacy fallbacks)
+    * resolve_html_dir(settings)  -> <paths.html> (ensures exists)
+    * resolve_graphs_dir(settings)-> <paths.graphs> (ensures exists)
+    * resolve_targets_path(settings=None) -> absolute path to mtr_targets.yaml
+      (accepts both old call style w/o args and new style with settings)
 
-graph_time_ranges:
-  - label: "15m"
-    seconds: 900
-  - label: "1h"
-    seconds: 3600
-  - label: "24h"
-    seconds: 86400
+- HTML / graph helpers:
+    * get_html_ranges(settings) -> sanitized list of {"label","seconds"}
+    * resolve_html_knobs(settings) -> (auto_refresh_seconds, log_lines_display)
+    * resolve_canvas(settings) -> (width, height, max_hops)
 
-logging_levels:
-  default: INFO
-  controller: INFO
-  mtr_watchdog: INFO
-  rrd_exporter: INFO
-  html_generator: INFO
-  modules: WARNING
+- Logging:
+    * setup_logger(name, settings, ...) -> logging.Logger (rotating file + console)
+    * refresh_logger_levels(...) -> works with BOTH new and old signatures
+        - New: refresh_logger_levels(settings, logger_names=[...])
+        - Old: refresh_logger_levels(logger, "logger_name", settings)
+
+Design notes
+------------
+- This file never assumes a global "repo root" except where needed by
+  resolve_targets_path() as a final fallback. We compute repo_root()
+  from this file's location so systemd or different cwd won't break it.
+- Traceroute dir is **strict**: must be exactly settings['paths']['traceroute'] and
+  must exist. Writers will refuse; readers log and continue with empty labels.
+
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import json
+import time
 import yaml
 import logging
 from logging.handlers import RotatingFileHandler
-from typing import Dict, Any, Optional, List
-
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Union
 
 # -----------------------------------------------------------------------------
-# Basic helpers
+# Small internals
 # -----------------------------------------------------------------------------
 
 def _expand(path: Optional[str]) -> Optional[str]:
@@ -62,20 +64,22 @@ def _expand(path: Optional[str]) -> Optional[str]:
         return None
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
-
-def _mkdir_p(path: Optional[str]) -> None:
-    """Create a directory (and parents) if missing. No error if it exists."""
-    if not path:
+def _mkdir_p(p: Optional[str]) -> None:
+    if not p:
         return
-    os.makedirs(path, exist_ok=True)
-
+    os.makedirs(p, exist_ok=True)
 
 def _read_yaml(fp: str) -> Dict[str, Any]:
-    """Read a YAML file into a dict. Empty files produce {}."""
     with open(fp, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data or {}
 
+def repo_root() -> str:
+    """
+    Heuristic repo root = two levels above this file:
+      .../scripts/modules/utils.py -> repo_root = .../
+    """
+    return str(Path(__file__).resolve().parents[2])
 
 # -----------------------------------------------------------------------------
 # Settings
@@ -83,210 +87,154 @@ def _read_yaml(fp: str) -> Dict[str, Any]:
 
 def load_settings(path: str) -> Dict[str, Any]:
     """
-    Load YAML settings from 'path', expand known path keys, and attach metadata.
+    Load YAML settings from 'path', expand known path keys, ensure key presence.
 
-    Attaches:
-      settings['_meta']['settings_path'] : absolute path to the YAML file
-      settings['_meta']['settings_dir']  : parent directory of the YAML file
+    Ensures:
+      - top-level dicts: 'paths', 'logging_levels'
+      - expands: paths.[rrd|graphs|html|logs|traceroute|cache]
     """
     path = _expand(path) or path
     if not path or not os.path.isfile(path):
         raise FileNotFoundError(f"Settings file not found: {path}")
-
     data = _read_yaml(path)
     data.setdefault("paths", {})
     data.setdefault("logging_levels", {})
-
-    # Attach metadata for later relative path resolution
-    data.setdefault("_meta", {})
-    data["_meta"]["settings_path"] = path
-    data["_meta"]["settings_dir"] = os.path.dirname(path)
-
-    # Normalize/expand path fields
     p = data["paths"]
     for k in ("rrd", "graphs", "html", "logs", "traceroute", "cache"):
         if k in p:
             p[k] = _expand(p[k])
-
     return data
 
+# -----------------------------------------------------------------------------
+# Paths
+# -----------------------------------------------------------------------------
 
-def resolve_html_dir(settings: Dict[str, Any]) -> str:
+def get_path(settings: dict, key: str, legacy_keys: Optional[List[str]] = None, default: Optional[str] = None) -> Optional[str]:
     """
-    Return the HTML output directory; create it if missing.
-    If paths.html is missing, default to ./html (created).
-    """
-    html_dir = settings.get("paths", {}).get("html") or _expand("./html")
-    _mkdir_p(html_dir)
-    return html_dir
+    Resolve a path-like value.
 
+    - Looks in settings['paths'][key]
+    - If absent and legacy_keys provided, tries those at top-level
+    - Returns the string as-is (no existence check)
+    """
+    try:
+        paths = settings.get("paths", {}) or {}
+        val = paths.get(key)
+        if val:
+            return str(val)
+    except Exception:
+        pass
+
+    if legacy_keys:
+        for k in legacy_keys:
+            try:
+                v = settings.get(k)
+                if v:
+                    return str(v)
+            except Exception:
+                continue
+    return default
 
 def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """
-    Resolve all important directories.
+    Resolve all important directories. STRICT policy for traceroute:
 
-    STRICT traceroute policy:
-      - Accept ONLY settings['paths']['traceroute'].
-      - Do NOT auto-create it.
-      - If missing or not a directory, return None (consumers must handle this).
-
-    Returns:
+    Returns a dict:
       {
-        "rrd":        str|None,   # input; not created
-        "graphs":     str,        # created if needed
-        "html":       str,        # created if needed
-        "logs":       str,        # created if needed
-        "traceroute": str|None,   # input; not created
-        "cache":      str,        # created if needed (defaults under html)
+        "html": <str>,         # created
+        "graphs": <str>,       # created
+        "logs": <str>,         # created
+        "cache": <str>,        # created (default <html>/var/hop_ip_cache)
+        "rrd": <str|None>,     # input; not created
+        "traceroute": <str|None>  # input; STRICT; not created
       }
     """
-    paths_cfg = settings.get("paths", {}) or {}
+    paths_cfg = (settings or {}).get("paths", {}) or {}
 
-    # html/logs/graphs: safe to create
-    html_dir = paths_cfg.get("html") or _expand("./html")
-    _mkdir_p(html_dir)
-
-    logs_dir = paths_cfg.get("logs") or _expand("./logs")
-    _mkdir_p(logs_dir)
-
+    html_dir   = paths_cfg.get("html")   or _expand("./html")
+    logs_dir   = paths_cfg.get("logs")   or _expand("./logs")
     graphs_dir = paths_cfg.get("graphs") or os.path.join(html_dir, "graphs")
-    _mkdir_p(graphs_dir)
+    cache_dir  = paths_cfg.get("cache")  or os.path.join(html_dir, "var", "hop_ip_cache")
 
-    # cache: default under HTML
-    cache_dir = paths_cfg.get("cache") or os.path.join(html_dir, "var", "hop_ip_cache")
+    _mkdir_p(html_dir)
+    _mkdir_p(logs_dir)
+    _mkdir_p(graphs_dir)
     _mkdir_p(cache_dir)
 
-    # rrd: input; do not create
+    # Inputs: do not create
     rrd_dir = paths_cfg.get("rrd")
     if rrd_dir:
         rrd_dir = _expand(rrd_dir)
 
-    # traceroute: STRICT YAML only; do NOT create
-    tr_yaml = paths_cfg.get("traceroute")
-    traceroute_dir = _expand(tr_yaml) if tr_yaml else None
+    # STRICT traceroute path: only from YAML and must exist
+    tr_dir = paths_cfg.get("traceroute")
+    traceroute_dir = _expand(tr_dir) if tr_dir else None
     if traceroute_dir and not os.path.isdir(traceroute_dir):
         traceroute_dir = None
-
-    # Optional lightweight logging if a handler exists
-    log = logging.getLogger("paths")
-    if log.handlers:
-        if traceroute_dir:
-            log.info(f"Using traceroute dir (settings.paths.traceroute): {traceroute_dir}")
-        else:
-            log.error(
-                "settings.paths.traceroute is missing or not a directory. "
-                "Writers must refuse to write; readers will have empty hop labels."
-            )
+        log = logging.getLogger("paths")
+        if log.handlers:
+            log.error("settings.paths.traceroute is missing or not a directory. "
+                      "Writers must refuse to write; readers will have empty hop labels.")
 
     return {
-        "rrd": rrd_dir,
-        "graphs": graphs_dir,
         "html": html_dir,
+        "graphs": graphs_dir,
         "logs": logs_dir,
-        "traceroute": traceroute_dir,
         "cache": cache_dir,
+        "rrd": rrd_dir,
+        "traceroute": traceroute_dir,
     }
 
-def get_path(
-    settings: Dict[str, Any],
-    key: str,
-    create: bool = False,
-    default: Optional[str] = None,
-    required: bool = False,
-    **_ignore_kwargs,
-) -> Optional[str]:
+def resolve_html_dir(settings: Dict[str, Any]) -> str:
+    p = resolve_all_paths(settings)["html"]
+    _mkdir_p(p)
+    return p
+
+def resolve_graphs_dir(settings: Dict[str, Any]) -> str:
+    p = resolve_all_paths(settings)["graphs"]
+    _mkdir_p(p)
+    return p
+
+def resolve_targets_path(settings: Optional[Dict[str, Any]] = None) -> str:
     """
-    Resolve a single path by name, optionally creating safe directories.
+    Return an absolute path to the targets file (mtr_targets.yaml).
 
-    Parameters
-    ----------
-    settings : dict
-        YAML settings loaded via load_settings().
-    key : str
-        One of: 'html', 'graphs', 'logs', 'cache', 'rrd', 'traceroute'.
-    create : bool, default False
-        If True, create the directory when it is safe to do so
-        (only for: html, graphs, logs, cache). For 'rrd' and 'traceroute'
-        this function NEVER creates the directory.
-    default : str | None
-        Fallback absolute/relative path to use if the resolved value is None.
-        (Will be expanded to an absolute path.)
-    required : bool, default False
-        If True and the final path is still None/missing, raise RuntimeError.
-    **_ignore_kwargs :
-        Accepted and ignored to remain backward compatible with older callers
-        that might pass extra flags like strict=True.
+    Priority:
+      1) settings['files']['targets'] if provided
+      2) <repo_root>/mtr_targets.yaml
+      3) ./mtr_targets.yaml (CWD)
 
-    Returns
-    -------
-    str | None
-        The resolved absolute path, or None if not available and not required.
-
-    Notes
-    -----
-    - Uses resolve_all_paths(settings), which enforces **strict YAML-only**
-      resolution for 'traceroute' (no env/fallbacks; directory is not created).
-    - For 'rrd' and 'traceroute', this helper never creates the directory.
+    Accepts both call styles:
+      resolve_targets_path()                # old call sites
+      resolve_targets_path(settings_dict)   # new call sites
     """
-    paths = resolve_all_paths(settings)
-    path = paths.get(key)
+    # Try settings override first
+    if isinstance(settings, dict):
+        files = settings.get("files") or {}
+        cand = files.get("targets")
+        if cand:
+            return os.path.abspath(_expand(cand) or cand)
 
-    if not path and default:
-        path = _expand(default)
+    # Repo-root default
+    rr = repo_root()
+    p1 = os.path.join(rr, "mtr_targets.yaml")
+    if os.path.isfile(p1):
+        return p1
 
-    # Only create for known "safe" outputs
-    if path and create and key in ("html", "graphs", "logs", "cache"):
-        _mkdir_p(path)
-
-    if required and not path:
-        raise RuntimeError(f"Required path '{key}' could not be resolved (and no usable default).")
-
-    return path
+    # Fallback: current working directory
+    return os.path.abspath("./mtr_targets.yaml")
 
 # -----------------------------------------------------------------------------
-# Targets file helper
-# -----------------------------------------------------------------------------
-
-def resolve_targets_path(settings: Dict[str, Any]) -> str:
-    """
-    Return the absolute path to the targets YAML file.
-
-    Order of resolution:
-      1) settings['files']['targets'] (relative to the settings file if not absolute)
-      2) 'mtr_targets.yaml' next to the settings file
-      3) 'mtr_targets.yaml' in the current working directory
-    """
-    files = settings.get("files", {}) or {}
-
-    p = files.get("targets")
-    if p:
-        if not os.path.isabs(p):
-            base = settings.get("_meta", {}).get("settings_dir") or os.getcwd()
-            p = os.path.join(base, p)
-        return os.path.abspath(p)
-
-    base = settings.get("_meta", {}).get("settings_dir") or os.getcwd()
-    cand = os.path.join(base, "mtr_targets.yaml")
-    if os.path.isfile(cand):
-        return os.path.abspath(cand)
-
-    return os.path.abspath("mtr_targets.yaml")
-
-
-# -----------------------------------------------------------------------------
-# HTML / Graph helpers
+# HTML & Graph helpers
 # -----------------------------------------------------------------------------
 
 def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
     """
-    Return a sanitized, sorted list of time ranges for UI/exports.
-
+    Return a sanitized list of time ranges for the UI/exports.
     Accepts either:
-      - list of dicts: [{"label":"1h","seconds":3600}, ...]
-      - mapping: {"1h": 3600, "24h": 86400}
-      - fallback strings "label:seconds" (e.g., "1h:3600")
-
-    De-duplicates by label (first wins) and sorts ascending by seconds.
+      settings['graph_time_ranges'] = [{"label": "1h", "seconds": 3600}, ...]
+      settings['graph_time_ranges'] = {"1h": 3600, "24h": 86400}
+      settings['graph_time_ranges'] = ["1h:3600", "24h:86400"]
     """
     raw = settings.get("graph_time_ranges") or []
     out: List[Dict[str, int]] = []
@@ -296,57 +244,77 @@ def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, int]]:
         for k, v in raw.items():
             label = str(k).strip()
             try:
-                seconds = int(v)
+                sec = int(v)
             except Exception:
                 continue
-            if not label or seconds <= 0 or label in seen:
+            if not label or sec <= 0 or label in seen:
                 continue
             seen.add(label)
-            out.append({"label": label, "seconds": seconds})
+            out.append({"label": label, "seconds": sec})
 
     elif isinstance(raw, list):
         for row in raw:
-            label, seconds = None, None
+            label, sec = None, None
             if isinstance(row, dict):
                 label = str(row.get("label") or "").strip()
                 try:
-                    seconds = int(row.get("seconds"))
+                    sec = int(row.get("seconds"))
                 except Exception:
-                    seconds = None
-            elif isinstance(row, str) and ":" in row:
-                a, b = row.split(":", 1)
-                label = a.strip()
-                try:
-                    seconds = int(b.strip())
-                except Exception:
-                    seconds = None
-
-            if not label or not seconds or seconds <= 0 or label in seen:
+                    sec = None
+            elif isinstance(row, str):
+                parts = row.split(":")
+                if len(parts) == 2:
+                    label = parts[0].strip()
+                    try:
+                        sec = int(parts[1].strip())
+                    except Exception:
+                        sec = None
+            if not label or not sec or sec <= 0 or label in seen:
                 continue
             seen.add(label)
-            out.append({"label": label, "seconds": seconds})
+            out.append({"label": label, "seconds": sec})
 
     out.sort(key=lambda r: r["seconds"])
     return out
 
-
-def resolve_canvas(settings: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_html_knobs(settings: Dict[str, Any]) -> tuple[int, int]:
     """
-    Convenience bundle for HTML/graph modules.
-    Returns:
-      {
-        "html_dir":   <paths.html>,
-        "graph_dir":  <paths.graphs>,
-        "time_ranges": get_html_ranges(settings),
-      }
-    """
-    paths = resolve_all_paths(settings)
-    return {
-        "html_dir": paths["html"],
-        "graph_dir": paths["graphs"],
-        "time_ranges": get_html_ranges(settings),
-    }
+    Return HTML knobs:
+      (auto_refresh_seconds, log_lines_display)
 
+    Supports both:
+      settings['html']['auto_refresh_seconds'] / settings['html']['log_lines_display']
+    and legacy:
+      settings['html_auto_refresh_seconds'], settings['log_lines_display']
+    """
+    html = settings.get("html", {}) or {}
+    auto_refresh = html.get("auto_refresh_seconds",
+                            settings.get("html_auto_refresh_seconds", 0))
+    log_lines = html.get("log_lines_display",
+                         settings.get("log_lines_display", 50))
+    try: auto_refresh = int(auto_refresh)
+    except Exception: auto_refresh = 0
+    try: log_lines = int(log_lines)
+    except Exception: log_lines = 50
+    return auto_refresh, log_lines
+
+def resolve_canvas(settings: Dict[str, Any]) -> tuple[int, int, int]:
+    """
+    Return graph canvas (width, height, max_hops) with legacy fallbacks.
+    Matches the expectation in modules/graph_config.py:
+        self.WIDTH, self.HEIGHT, self.MAX_HOPS = resolve_canvas(settings)
+    """
+    canvas = settings.get("graph_canvas", {}) or {}
+    width    = canvas.get("width",  settings.get("graph_width",  800))
+    height   = canvas.get("height", settings.get("graph_height", 200))
+    max_hops = canvas.get("max_hops", settings.get("max_hops", 30))
+    try: width = int(width)
+    except Exception: width = 800
+    try: height = int(height)
+    except Exception: height = 200
+    try: max_hops = int(max_hops)
+    except Exception: max_hops = 30
+    return width, height, max_hops
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -363,11 +331,9 @@ _LEVELS = {
 }
 
 def _level_from_name(name: Optional[str], default: int = logging.INFO) -> int:
-    """Map a string level name (case-insensitive) to a logging level integer."""
     if not name:
         return default
     return _LEVELS.get(str(name).upper(), default)
-
 
 def setup_logger(
     name: str,
@@ -379,13 +345,13 @@ def setup_logger(
 ) -> logging.Logger:
     """
     Create (or retrieve) a logger that writes to the central logs directory.
-    Adds both a rotating file handler (if settings are available) and a console handler.
+    - Level comes from settings['logging_levels'][name] (fallback 'default': INFO)
+    - Rotating file handler + console handler
     """
     logger = logging.getLogger(name)
     if logger.handlers:
         return logger
 
-    # Compute base level from YAML logging_levels (or default INFO)
     default_level = logging.INFO
     if settings:
         levels = settings.get("logging_levels", {}) or {}
@@ -396,28 +362,23 @@ def setup_logger(
         default_level = _level_from_name(level_override, default_level)
 
     logger.setLevel(default_level)
-    logger.propagate = False  # do not duplicate to root
+    logger.propagate = False
 
-    # Formatter (timestamps + level + message)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
 
-    # File handler (to central logs dir) if settings present
     if settings:
-        all_paths = resolve_all_paths(settings)
-        logs_dir = all_paths["logs"] or _expand("./logs")
+        paths = resolve_all_paths(settings)
+        logs_dir = paths["logs"] or _expand("./logs")
         _mkdir_p(logs_dir)
-
         if not logfile:
             logfile = os.path.join(logs_dir, f"{name}.log")
-
         fh = RotatingFileHandler(logfile, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
         fh.setLevel(default_level)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
 
-    # Console handler (always add one)
     ch = logging.StreamHandler(stream=sys.stdout)
     ch.setLevel(default_level)
     ch.setFormatter(formatter)
@@ -426,49 +387,72 @@ def setup_logger(
     logger.debug(f"Logger '{name}' initialized at level {logging.getLevelName(default_level)}")
     return logger
 
-
-def refresh_logger_levels(settings: Dict[str, Any], logger_names: Optional[List[str]] = None) -> None:
+def refresh_logger_levels(*args, **kwargs) -> None:
     """
-    Update logging levels for existing loggers according to settings['logging_levels'].
+    Backward-compatible logger level refresher.
 
-    Behavior:
-      - Exact-name match first (e.g., 'controller', 'mtr_watchdog').
-      - If name starts with 'modules' and 'modules' key exists, use that as a group default.
-      - Otherwise fall back to 'default' (INFO if missing).
-      - Each logger's handlers also get their level updated for consistency.
+    Two accepted signatures:
+
+    NEW (bulk refresh):
+        refresh_logger_levels(settings, logger_names=None)
+            - settings: dict
+            - logger_names: optional list[str], default = all known loggers
+
+    OLD (single logger refresh; used by older controller/monitor code):
+        refresh_logger_levels(logger, name, settings)
+
+    In both cases, handlers' levels are kept in sync with the logger level.
     """
-    levels_cfg = (settings or {}).get("logging_levels", {})
-    default_level = _level_from_name(levels_cfg.get("default", "INFO"))
+    # Detect which call style is used
+    if args and isinstance(args[0], dict):
+        # NEW: (settings, logger_names=None)
+        settings: Dict[str, Any] = args[0]
+        logger_names: Optional[List[str]] = kwargs.get("logger_names")
+        levels_cfg = settings.get("logging_levels", {}) or {}
+        default_level = _level_from_name(levels_cfg.get("default", "INFO"))
 
-    # Which loggers to touch?
-    if logger_names:
-        names_to_consider = logger_names
+        if logger_names is None:
+            # all known non-proxy loggers
+            names_to_consider = [
+                n for (n, obj) in logging.root.manager.loggerDict.items()
+                if isinstance(obj, logging.Logger)
+            ]
+            if "root" not in names_to_consider:
+                names_to_consider.append("root")
+        else:
+            names_to_consider = list(logger_names)
+
+        for name in names_to_consider:
+            lg = logging.getLogger(None if name == "root" else name)
+            level_name = levels_cfg.get(name)
+            if not level_name and name.startswith("modules"):
+                level_name = levels_cfg.get("modules")
+            level = _level_from_name(level_name, default_level)
+            try:
+                lg.setLevel(level)
+            except Exception:
+                continue
+            for h in lg.handlers:
+                try:
+                    h.setLevel(level)
+                except Exception:
+                    pass
+
     else:
-        names_to_consider = [
-            n for (n, obj) in logging.root.manager.loggerDict.items()
-            if isinstance(obj, logging.Logger)
-        ]
-        if "root" not in names_to_consider:
-            names_to_consider.append("root")
-
-    for name in names_to_consider:
-        lg = logging.getLogger(None if name == "root" else name)
-
-        level_name = levels_cfg.get(name)
-        if not level_name and name.startswith("modules"):
-            level_name = levels_cfg.get("modules")
-        level = _level_from_name(level_name, default_level)
-
+        # OLD: (logger, name, settings)
+        if len(args) < 3:
+            return
+        logger_obj: logging.Logger = args[0]
+        name: str = args[1]
+        settings: Dict[str, Any] = args[2] if isinstance(args[2], dict) else {}
+        levels_cfg = settings.get("logging_levels", {}) or {}
+        level = _level_from_name(levels_cfg.get(name, levels_cfg.get("default", "INFO")), logging.INFO)
         try:
-            lg.setLevel(level)
+            logger_obj.setLevel(level)
         except Exception:
-            continue
-
-        for h in lg.handlers:
+            return
+        for h in getattr(logger_obj, "handlers", []):
             try:
                 h.setLevel(level)
             except Exception:
                 pass
-
-        if lg.isEnabledFor(logging.DEBUG):
-            lg.debug(f"Logger '{name}' level refreshed to {logging.getLevelName(level)}")
