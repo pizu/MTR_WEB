@@ -421,20 +421,18 @@ def _level_from_name(name: Optional[str], default: int = logging.INFO) -> int:
 
 
 def setup_logger(
-    name: str,
-    settings: Optional[Dict[str, Any]] = None,
-    logfile: Optional[str] = None,
-    level_override: Optional[str] = None,
-    max_bytes: int = 10 * 1024 * 1024,  # 10 MiB per file
-    backup_count: int = 5,
-) -> logging.Logger:
-    """
-    Create (or retrieve) a logger that writes to the central logs directory.
-    Adds both a rotating file handler (if settings are available) and a console handler.
-    """
+     name: str,
+     settings: Optional[Dict[str, Any]] = None,
+     logfile: Optional[str] = None,
+     level_override: Optional[str] = None,
+     max_bytes: int = 10 * 1024 * 1024,  # 10 MiB per file
+     backup_count: int = 5,
+ ) -> logging.Logger:
+     """
+     Create (or retrieve) a logger that writes to the central logs directory.
+     Adds both a rotating file handler (if settings are available) and a console handler.
+     """
     logger = logging.getLogger(name)
-    if logger.handlers:
-        return logger
 
     # Compute base level from YAML logging_levels (or default INFO)
     default_level = logging.INFO
@@ -446,8 +444,18 @@ def setup_logger(
     if level_override:
         default_level = _level_from_name(level_override, default_level)
 
+    # Always enforce the level, even if handlers already exist.
     logger.setLevel(default_level)
     logger.propagate = False  # do not duplicate to root
+
+    # If handlers already exist (e.g., previous init in-process), just retune them and return.
+    if logger.handlers:
+        for h in logger.handlers:
+            try:
+                h.setLevel(default_level)
+            except Exception:
+                pass
+        return logger
 
     # Formatter (timestamps + level + message)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
