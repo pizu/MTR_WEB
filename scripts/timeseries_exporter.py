@@ -290,6 +290,13 @@ def main(argv: List[str] | None = None) -> int:
 
     # Create the standard logger using your central utilities
     logger = setup_logger("timeseries_exporter", settings=settings)
+    # Honor YAML changes immediately (no stale INFO handlers):
+    refresh_logger_levels(settings, [
+        "timeseries_exporter",   # this script
+        "modules",               # module group default, if used
+        "paths",                 # path helper logs
+        "rrd_exporter",          # if any sub-call uses its own logger name
+    ])
 
     # Immediately refresh levels from YAML in case they changed
     try:
