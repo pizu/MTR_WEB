@@ -210,7 +210,7 @@ def main(argv: List[str] | None = None) -> int:
 
     # IP list
     if args.ip:
-        ips = [args.ip]
+        ips = [t["ip"] for t in targets if t.get("ip") and t["ip"] != "mtr_settings"]
     else:
         targets_file = resolve_targets_path(settings)
         targets = _load_targets_from_file(targets_file, logger)
