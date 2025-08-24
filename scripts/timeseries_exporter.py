@@ -36,9 +36,7 @@ Target list inputs (flexible)
   2) Mapping form (ip -> item), value can be dict/list/string (ip inferred from key).
 
 - Paused targets are ignored.
-- The special pseudo-target "mtr_settings" (if present) is **ignored** here. If
-  you want a settings manifest JSON for the UI, generate it separately (do not
-  treat it like an RRD target).
+- The special pseudo-target "mtr_settings" (if present) is **ignored** here.
 
 CLI
 ---
@@ -51,6 +49,16 @@ Exit codes
 ----------
 0 on success; 1 on configuration/parse errors.
 
+Logging policy compliance
+-------------------------
+- Uses modules.utils.setup_logger("timeseries_exporter", settings) to inherit:
+  - rotating file handler at <paths.logs>/timeseries_exporter.log
+  - console handler (stdout) with the same format
+- On settings load failure (before we can call setup_logger), a _bootstrap logger
+  is used to emit a proper "[FATAL]" style error to stderr with the same format.
+- Immediately calls modules.utils.refresh_logger_levels(...) after settings load
+  so updated YAML levels take effect.
+
 Notes
 -----
 - This script only *reads* RRDs and writes JSON; it does not create RRD files.
@@ -62,6 +70,7 @@ from __future__ import annotations
 import os
 import sys
 import argparse
+import logging
 from typing import Dict, Any, List, Optional
 
 import yaml
@@ -70,12 +79,34 @@ import yaml
 from modules.utils import (
     load_settings,
     setup_logger,
+    refresh_logger_levels,
     resolve_all_paths,
     resolve_html_dir,
     resolve_targets_path,
     get_html_ranges,
 )
 from modules.rrd_exporter import export_ip_timerange_json
+
+
+# -----------------------------------------------------------------------------
+# Bootstrap logger (used ONLY if settings fail to load)
+# -----------------------------------------------------------------------------
+def _bootstrap_logger() -> logging.Logger:
+    """
+    Create a temporary stderr logger with the same format as utils.setup_logger
+    for early-failure reporting (before settings are available).
+    """
+    lg = logging.getLogger("timeseries_exporter_bootstrap")
+    if lg.handlers:
+        return lg
+    lg.setLevel(logging.INFO)
+    handler = logging.StreamHandler(stream=sys.stderr)
+    fmt = "%(asctime)s [%(levelname)s] %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+    lg.addHandler(handler)
+    lg.propagate = False
+    return lg
 
 
 # -----------------------------------------------------------------------------
@@ -150,8 +181,7 @@ def _load_targets_from_file(path: str, logger) -> List[Dict[str, Any]]:
     seen_ips = set()
 
     if isinstance(data, list):
-        rows = data
-        items = enumerate(rows)
+        items = enumerate(data)
     elif isinstance(data, dict):
         items = data.items()
     else:
@@ -159,7 +189,6 @@ def _load_targets_from_file(path: str, logger) -> List[Dict[str, Any]]:
         return []
 
     for key, row in items:
-        candidate = None
         if isinstance(data, dict):
             # mapping form: ip -> row
             if isinstance(row, dict) and row.get("ip"):
@@ -176,7 +205,6 @@ def _load_targets_from_file(path: str, logger) -> List[Dict[str, Any]]:
                 else:
                     candidate = {"ip": str(key), "description": "", "pause": False}
         else:
-            # list form
             candidate = _normalize_target_row(row)
 
         if not candidate:
@@ -256,10 +284,19 @@ def main(argv: List[str] | None = None) -> int:
     try:
         settings = load_settings(args.settings)
     except Exception as e:
-        print(f"[FATAL] cannot load settings: {e}", file=sys.stderr)
+        boot = _bootstrap_logger()
+        boot.error(f"[FATAL] cannot load settings: {e}")
         return 1
 
+    # Create the standard logger using your central utilities
     logger = setup_logger("timeseries_exporter", settings=settings)
+
+    # Immediately refresh levels from YAML in case they changed
+    try:
+        refresh_logger_levels(settings, ["timeseries_exporter", "modules", "paths"])
+    except Exception:
+        # Non-fatal; continue with current levels
+        pass
 
     # Ensure output directory root exists (and compute all paths)
     paths = resolve_all_paths(settings)
