@@ -102,7 +102,7 @@ def graph_summary_work(args):
     for hop_index, hop_label in (hops or []):
         ds_name = f"hop{hop_index}_{metric}"
         if ds_name not in ds_present:
-            continue  # silently ignore missing DS for this hop/metric
+            continue  # ignore missing DS for this hop/metric
         defs.append(f"DEF:{ds_name}={rrd_path}:{ds_name}:AVERAGE")
         lines.append(f"LINE1:{ds_name}#{_color(hop_index)}:{_sanitize(hop_label)}")
 
@@ -110,14 +110,15 @@ def graph_summary_work(args):
         # Nothing to draw for this metric in this RRD
         return ("skipped", png, time.time() - t0)
 
-    cmd = defs + lines + [
+    # Put graph options FIRST (rrdtool is picky), then DEF/LINEs.
+    cmd = [
         f"--title={ip} - {metric.upper()} ({label})",
-        f"--width={width}",
-        f"--height={height}",
+        f"--width={int(width)}",
+        f"--height={int(height)}",
         "--slope-mode",
         "--end", "now",
         f"--start=-{int(seconds)}",
-    ]
+    ] + defs + lines
 
     try:
         if exec_kind == "thread" and use_lock:
