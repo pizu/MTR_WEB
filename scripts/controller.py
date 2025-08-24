@@ -52,7 +52,7 @@ MONITOR_SCRIPT = os.path.join(SCRIPTS_DIR, "mtr_watchdog.py")
 from modules.utils import (  # noqa: E402
     load_settings,
     setup_logger,
-    refresh_logger_levels,
+    refresh_logger_levels,   # uses signature: refresh_logger_levels(settings, logger_names=None)
     resolve_all_paths,
 )
 
@@ -114,7 +114,8 @@ class Controller:
         """Reload settings; refresh logger levels; update policy; optionally run pipeline."""
         if self.watcher.settings_changed():
             self.settings = load_settings(SETTINGS_FILE)
-            refresh_logger_levels(logger=self.logger, settings=self.settings)
+            # IMPORTANT: use utils.refresh_logger_levels signature (no 'logger=' kw)
+            refresh_logger_levels(settings=self.settings)
             self.policy = ControllerPolicy.from_settings(self.settings, self.logger)
             self.logger.info("Settings reloaded; logger levels + controller policy refreshed.")
 
