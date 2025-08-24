@@ -6,51 +6,32 @@ scripts/timeseries_exporter.py
 
 Purpose
 -------
-Export Chart.js-friendly JSON time-series for each target IP and time range
-into <paths.html>/data, using the per-target RRD and hop labels/cache.
+Export Chart.js-friendly JSON time-series bundles from per-target RRD files
+into <paths.html>/data for each target IP and configured time range.
 
-Data source
------------
-Per-target RRDs must live under settings['paths']['rrd'] as <ip>.rrd.
+Inputs
+------
+- Settings YAML (via --settings), providing:
+    paths.html, paths.rrd (required)
+    paths.traceroute (strict read-only for labels)
+    graph_time_ranges: list/dict of {label, seconds}
+- Targets YAML (auto-resolved by utils.resolve_targets_path(settings)),
+  supporting multiple shapes (see _load_targets_from_file).
 
 Outputs
 -------
-For each (ip, range), write:
-    <paths.html>/data/<ip>_<label>.json
-
-Configuration
--------------
-- YAML: mtr_script_settings.yaml (path passed via --settings)
-  Required paths:
-    paths.html, paths.rrd
-  Optional:
-    paths.logs, paths.graphs, paths.cache
-  Strict:
-    paths.traceroute  (used by exporter to read hop labels; not created)
-
-- Targets file (YAML):
-  Auto-resolved by utils.resolve_targets_path(settings):
-    1) settings['files']['targets'] if set (resolved relative to settings file)
-    2) ./mtr_targets.yaml next to the settings file
-    3) ./mtr_targets.yaml in CWD
-
-Accepted shapes:
-  - list of dicts: [{'ip':'1.1.1.1', 'description':'...', 'pause':false}, ...]
-  - mapping: {'1.1.1.1': {'description':'...', 'pause':false}, ...}
+<paths.html>/data/<ip>_<label>.json  for each (ip, time-range)
 
 CLI
 ---
---settings PATH    : YAML settings path (default: mtr_script_settings.yaml)
---ip IP            : export only this single IP
---label LABEL      : export only this time range label (e.g., '1h')
---dry-run          : log actions without writing files
+--settings PATH   : path to mtr_script_settings.yaml (default: mtr_script_settings.yaml)
+--ip IP           : export only this IP (skip targets file)
+--label LABEL     : export only this time range (e.g., "1h")
+--dry-run         : log actions without writing
 
-Notes
------
-- If --ip is omitted, targets are loaded from the targets YAML.
-- If --label is omitted, time ranges come from settings['graph_time_ranges'].
-- The exporter will log and skip if the RRD is missing.
-
+Exit codes
+----------
+0 on success, 1 on configuration/parse errors.
 """
 
 from __future__ import annotations
@@ -58,7 +39,7 @@ from __future__ import annotations
 import os
 import sys
 import argparse
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 
 import yaml
 
@@ -67,56 +48,128 @@ from modules.utils import (
     setup_logger,
     resolve_all_paths,
     resolve_html_dir,
-    resolve_targets_path,  # IMPORTANT: pass settings when calling
+    resolve_targets_path,
     get_html_ranges,
 )
-
 from modules.rrd_exporter import export_ip_timerange_json
 
 
 # -----------------------------------------------------------------------------
-# Targets loading
+# Target parsing helpers
 # -----------------------------------------------------------------------------
 
-def _load_targets_from_file(path: str) -> List[Dict[str, Any]]:
+def _normalize_target_row(row) -> Optional[Dict[str, Any]]:
     """
-    Parse a targets YAML file and return a list of active targets:
-      [{'ip': '1.1.1.1', 'description': '...', 'pause': False}, ...]
+    Normalize a row into: {"ip": <str>, "description": <str>, "pause": <bool>}
+
+    Accepted shapes:
+      - dict: {"ip": "8.8.8.8", "description": "...", "pause": false}
+      - str: "8.8.8.8"
+      - list/tuple:
+            ["8.8.8.8"]                           -> ip only
+            ["8.8.8.8", "Google DNS"]             -> ip + description
+            ["8.8.8.8", "Google DNS", true]       -> ip + description + pause
+            ["8.8.8.8", true]                     -> ip + pause
+    """
+    if isinstance(row, dict):
+        ip = str(row.get("ip") or "").strip()
+        if not ip:
+            return None
+        desc = str(row.get("description") or row.get("desc") or "").strip()
+        pause = bool(row.get("pause") or row.get("paused") or (not row.get("enabled", True)))
+        return {"ip": ip, "description": desc, "pause": pause}
+
+    if isinstance(row, str):
+        ip = row.strip()
+        if not ip:
+            return None
+        return {"ip": ip, "description": "", "pause": False}
+
+    if isinstance(row, (list, tuple)):
+        if not row:
+            return None
+        ip = str(row[0]).strip()
+        if not ip:
+            return None
+        desc = ""
+        pause = False
+        if len(row) >= 2:
+            if isinstance(row[1], str):
+                desc = row[1].strip()
+            else:
+                pause = bool(row[1])
+        if len(row) >= 3 and isinstance(row[2], (bool, int)):
+            pause = bool(row[2])
+        return {"ip": ip, "description": desc, "pause": pause}
+
+    return None
+
+
+def _load_targets_from_file(path: str, logger) -> List[Dict[str, Any]]:
+    """
+    Parse the targets YAML and return a list of ACTIVE targets (pause==False).
+
+    Supports:
+      - list of items (dicts/strings/lists as described above)
+      - mapping: ip -> dict|str|list
+    De-duplicates by IP (first definition wins).
     """
     if not os.path.isfile(path):
+        logger.warning(f"Targets file not found: {path}")
         return []
 
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    out: List[Dict[str, Any]] = []
+    normalized: List[Dict[str, Any]] = []
+    seen_ips = set()
 
     if isinstance(data, list):
         for row in data:
-            if not isinstance(row, dict):
+            t = _normalize_target_row(row)
+            if not t:
+                logger.debug(f"[targets] skipped unparsable row: {row!r}")
                 continue
-            ip = str(row.get("ip") or "").strip()
-            if not ip:
+            ip = t["ip"]
+            if ip in seen_ips:
                 continue
-            out.append({
-                "ip": ip,
-                "description": str(row.get("description") or ""),
-                "pause": bool(row.get("pause") or row.get("paused") or False),
-            })
+            seen_ips.add(ip)
+            normalized.append(t)
 
     elif isinstance(data, dict):
-        for ip, row in data.items():
-            if not ip:
-                continue
-            row = row or {}
-            out.append({
-                "ip": str(ip).strip(),
-                "description": str(row.get("description") or ""),
-                "pause": bool(row.get("pause") or row.get("paused") or False),
-            })
+        for key, row in data.items():
+            candidate = None
+            if isinstance(row, dict) and row.get("ip"):
+                candidate = _normalize_target_row(row)
+            else:
+                if isinstance(row, dict):
+                    row2 = dict(row)
+                    row2.setdefault("ip", str(key))
+                    candidate = _normalize_target_row(row2)
+                elif isinstance(row, (list, tuple, str)):
+                    candidate = _normalize_target_row(row)
+                    if candidate and not candidate.get("ip"):
+                        candidate["ip"] = str(key)
+                else:
+                    candidate = {"ip": str(key), "description": "", "pause": False}
 
-    # Drop paused
-    return [t for t in out if not t.get("pause")]
+            if not candidate:
+                logger.debug(f"[targets] skipped unparsable mapping entry: {key!r}: {row!r}")
+                continue
+
+            ip = candidate["ip"]
+            if ip in seen_ips:
+                continue
+            seen_ips.add(ip)
+            normalized.append(candidate)
+    else:
+        logger.error(f"[targets] Unsupported YAML root type: {type(data).__name__}")
+        return []
+
+    active = [t for t in normalized if not t.get("pause")]
+    if not active:
+        logger.warning("Targets parsed successfully but all are paused or empty.")
+    return active
 
 
 # -----------------------------------------------------------------------------
@@ -143,7 +196,7 @@ def main(argv: List[str] | None = None) -> int:
     paths = resolve_all_paths(settings)
     html_dir = resolve_html_dir(settings)  # ensures <html> exists
 
-    # Determine time ranges
+    # Time ranges
     ranges = get_html_ranges(settings)
     if args.label:
         ranges = [r for r in ranges if r.get("label") == args.label]
@@ -151,36 +204,33 @@ def main(argv: List[str] | None = None) -> int:
             logger.error(f"No matching time range label: {args.label}")
             return 1
 
-    # Determine IPs
-    ips: List[str]
+    if not ranges:
+        logger.warning("No time ranges configured; nothing to export.")
+        return 0
+
+    # IP list
     if args.ip:
         ips = [args.ip]
     else:
-        targets_file = resolve_targets_path(settings)  # FIX: pass settings
-        targets = _load_targets_from_file(targets_file)
+        targets_file = resolve_targets_path(settings)
+        targets = _load_targets_from_file(targets_file, logger)
         ips = [t["ip"] for t in targets]
 
     if not ips:
         logger.warning("No targets to export (no --ip given and targets file empty/missing).")
         return 0
 
-    if not ranges:
-        logger.warning("No time ranges configured; nothing to export.")
-        return 0
+    out_dir = os.path.join(html_dir, "data")
+    logger.info(f"Exporting {len(ips)} IP(s) over {len(ranges)} time range(s) into {out_dir}")
 
-    logger.info(f"Exporting {len(ips)} IP(s) over {len(ranges)} time range(s) into {os.path.join(html_dir, 'data')}")
-
-    # Export
     total = 0
     for ip in ips:
         for r in ranges:
             label = r["label"]
             seconds = int(r["seconds"])
             logger.info(f"[{ip}] {label} ({seconds}s)")
-
             if args.dry_run:
                 continue
-
             out_path = export_ip_timerange_json(ip, settings, label, seconds, logger=logger)
             logger.debug(f"[{ip}] wrote {out_path}")
             total += 1
