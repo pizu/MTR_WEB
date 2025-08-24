@@ -3,17 +3,15 @@ modules/controller_utils.py
 ===========================
 Small, testable helpers used by controller.py:
 
-- ControllerPolicy                    → parse controller.* settings with BC aliases
-- safe_mtime(path)                    → robust getmtime
-- child_env(scripts_dir)             → ensure PYTHONPATH includes scripts/
-- load_targets(config_file, logger)   → normalize targets from mtr_targets.yaml
-- ConfigWatcher                       → watches settings/targets YAML for changes
-- PipelineRunner                      → runs the 4 pipeline stages with per-stage logs
-- WatchdogManager                     → 1 watchdog process per active target
-- refresh_logging_from_settings(...)  → proxy to modules.utils.refresh_logger_levels
-- targets_path(settings)              → proxy to modules.utils.resolve_targets_path
-
-This module lets controller.py focus on orchestration instead of implementation.
+- ControllerPolicy           → parse controller.* settings with BC aliases
+- safe_mtime(path)           → robust getmtime
+- child_env(scripts_dir)     → ensure PYTHONPATH includes scripts/
+- load_targets(config_file, logger) → normalize targets from mtr_targets.yaml
+- ConfigWatcher              → watches settings/targets YAML for changes
+- PipelineRunner             → runs the 4 pipeline stages with per-stage logs
+- WatchdogManager            → 1 watchdog process per active target
+- refresh_logging_from_settings(settings) → delegate to utils.refresh_logger_levels
+- targets_path(settings)     → delegate to utils.resolve_targets_path
 """
 
 from __future__ import annotations
@@ -27,15 +25,13 @@ import subprocess
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-# NOTE: we only import the utils symbols that we want to expose as clean wrappers.
-# We NEVER configure handlers here—controller.py should create the logger via utils.setup_logger.
+# Optional imports from utils for thin wrappers; keep module decoupled.
 try:
     from modules.utils import (
         refresh_logger_levels as _utils_refresh_logger_levels,
         resolve_targets_path as _utils_resolve_targets_path,
     )
 except Exception:
-    # Soft fallback: in unit tests or partial environments, these may be absent.
     _utils_refresh_logger_levels = None
     _utils_resolve_targets_path = None
 
@@ -372,25 +368,20 @@ class WatchdogManager:
 
 def refresh_logging_from_settings(settings: Dict) -> None:
     """
-    Centralized, utils-backed way to refresh logger levels across the app.
-    This simply delegates to modules.utils.refresh_logger_levels(settings).
-
-    Keep controller.py clean by calling:
-        controller_utils.refresh_logging_from_settings(settings)
+    Delegate logger level refresh to modules.utils.refresh_logger_levels(settings).
+    Keeps controller.py clean and ensures a single place owns logging behavior.
     """
-    if _utils_refresh_logger_levels is None:
-        return
-    _utils_refresh_logger_levels(settings=settings)
+    if _utils_refresh_logger_levels:
+        _utils_refresh_logger_levels(settings=settings)
 
 
 def targets_path(settings: Optional[Dict] = None) -> str:
     """
-    Wrapper for modules.utils.resolve_targets_path(settings), exposed here
-    for callers that prefer to stay inside controller_utils.
+    Delegate targets path resolution to modules.utils.resolve_targets_path(settings).
     """
-    if _utils_resolve_targets_path is None:
-        # Fallback if utils isn’t available for some reason:
-        base = (settings or {}).get("_meta", {}).get("settings_dir") or os.getcwd()
-        cand = os.path.join(base, "mtr_targets.yaml")
-        return os.path.abspath(cand if os.path.isfile(cand) else "mtr_targets.yaml")
-    return _utils_resolve_targets_path(settings)
+    if _utils_resolve_targets_path:
+        return _utils_resolve_targets_path(settings)
+    # Fallback if utils import failed for any reason:
+    base = (settings or {}).get("_meta", {}).get("settings_dir") or os.getcwd()
+    cand = os.path.join(base, "mtr_targets.yaml")
+    return os.path.abspath(cand if os.path.isfile(cand) else "mtr_targets.yaml")
