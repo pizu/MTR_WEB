@@ -6,32 +6,55 @@ scripts/timeseries_exporter.py
 
 Purpose
 -------
-Export Chart.js-friendly JSON time-series bundles from per-target RRD files
-into <paths.html>/data for each target IP and configured time range.
+Export Chart.js-friendly JSON bundles from per-target RRD files into:
 
-Inputs
-------
-- Settings YAML (via --settings), providing:
-    paths.html, paths.rrd (required)
-    paths.traceroute (strict read-only for labels)
-    graph_time_ranges: list/dict of {label, seconds}
-- Targets YAML (auto-resolved by utils.resolve_targets_path(settings)),
-  supporting multiple shapes (see _load_targets_from_file).
+    <paths.html>/data/<ip>_<label>.json
 
-Outputs
--------
-<paths.html>/data/<ip>_<label>.json  for each (ip, time-range)
+for each active target IP and each configured time range label.
+
+Where the data comes from
+-------------------------
+- Per-target RRD files live under <paths.rrd> and contain DS per hop+metric,
+  e.g. "hop0_avg", "hop3_loss", etc.
+- Time ranges (labels + seconds) are read from:
+    settings['html']['time_ranges']   # preferred
+  with backwards compatibility for legacy keys (handled by utils.get_html_ranges).
+
+Target list inputs (flexible)
+-----------------------------
+- The targets YAML file is auto-resolved via utils.resolve_targets_path(settings).
+  It supports the following shapes (mix and match as needed):
+
+  1) List of dicts/strings/tuples:
+     - {"ip": "8.8.8.8", "description": "Google", "pause": false}
+     - "1.1.1.1"
+     - ["9.9.9.9"]                       -> ip only
+     - ["9.9.9.9", "Quad9"]              -> ip + description
+     - ["9.9.9.9", true]                 -> ip + pause
+     - ["9.9.9.9", "Quad9", true]        -> ip + description + pause
+
+  2) Mapping form (ip -> item), value can be dict/list/string (ip inferred from key).
+
+- Paused targets are ignored.
+- The special pseudo-target "mtr_settings" (if present) is **ignored** here. If
+  you want a settings manifest JSON for the UI, generate it separately (do not
+  treat it like an RRD target).
 
 CLI
 ---
 --settings PATH   : path to mtr_script_settings.yaml (default: mtr_script_settings.yaml)
---ip IP           : export only this IP (skip targets file)
---label LABEL     : export only this time range (e.g., "1h")
---dry-run         : log actions without writing
+--ip IP           : export only this IP (overrides targets file)
+--label LABEL     : export only this time range label (e.g. "1h")
+--dry-run         : log actions without writing any files
 
 Exit codes
 ----------
-0 on success, 1 on configuration/parse errors.
+0 on success; 1 on configuration/parse errors.
+
+Notes
+-----
+- This script only *reads* RRDs and writes JSON; it does not create RRD files.
+  Make sure your monitor/watchdog pipeline is populating <paths.rrd>.
 """
 
 from __future__ import annotations
@@ -39,10 +62,11 @@ from __future__ import annotations
 import os
 import sys
 import argparse
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 import yaml
 
+# Project helpers
 from modules.utils import (
     load_settings,
     setup_logger,
@@ -64,7 +88,8 @@ def _normalize_target_row(row) -> Optional[Dict[str, Any]]:
 
     Accepted shapes:
       - dict: {"ip": "8.8.8.8", "description": "...", "pause": false}
-      - str: "8.8.8.8"
+              (also accepts "desc", "paused", "enabled" for pragmatism)
+      - str:  "8.8.8.8"
       - list/tuple:
             ["8.8.8.8"]                           -> ip only
             ["8.8.8.8", "Google DNS"]             -> ip + description
@@ -111,7 +136,7 @@ def _load_targets_from_file(path: str, logger) -> List[Dict[str, Any]]:
 
     Supports:
       - list of items (dicts/strings/lists as described above)
-      - mapping: ip -> dict|str|list
+      - mapping: ip -> dict|str|list (ip inferred if missing)
     De-duplicates by IP (first definition wins).
     """
     if not os.path.isfile(path):
@@ -125,20 +150,18 @@ def _load_targets_from_file(path: str, logger) -> List[Dict[str, Any]]:
     seen_ips = set()
 
     if isinstance(data, list):
-        for row in data:
-            t = _normalize_target_row(row)
-            if not t:
-                logger.debug(f"[targets] skipped unparsable row: {row!r}")
-                continue
-            ip = t["ip"]
-            if ip in seen_ips:
-                continue
-            seen_ips.add(ip)
-            normalized.append(t)
-
+        rows = data
+        items = enumerate(rows)
     elif isinstance(data, dict):
-        for key, row in data.items():
-            candidate = None
+        items = data.items()
+    else:
+        logger.error(f"[targets] Unsupported YAML root type: {type(data).__name__}")
+        return []
+
+    for key, row in items:
+        candidate = None
+        if isinstance(data, dict):
+            # mapping form: ip -> row
             if isinstance(row, dict) and row.get("ip"):
                 candidate = _normalize_target_row(row)
             else:
@@ -152,24 +175,68 @@ def _load_targets_from_file(path: str, logger) -> List[Dict[str, Any]]:
                         candidate["ip"] = str(key)
                 else:
                     candidate = {"ip": str(key), "description": "", "pause": False}
+        else:
+            # list form
+            candidate = _normalize_target_row(row)
 
-            if not candidate:
-                logger.debug(f"[targets] skipped unparsable mapping entry: {key!r}: {row!r}")
-                continue
+        if not candidate:
+            logger.debug(f"[targets] skipped unparsable entry: {key!r}: {row!r}")
+            continue
 
-            ip = candidate["ip"]
-            if ip in seen_ips:
-                continue
-            seen_ips.add(ip)
-            normalized.append(candidate)
-    else:
-        logger.error(f"[targets] Unsupported YAML root type: {type(data).__name__}")
-        return []
+        ip = candidate["ip"]
+        if ip in seen_ips:
+            continue
+        seen_ips.add(ip)
+        normalized.append(candidate)
 
     active = [t for t in normalized if not t.get("pause")]
     if not active:
         logger.warning("Targets parsed successfully but all are paused or empty.")
     return active
+
+
+def _discover_rrd_ips_from_dir(rrd_dir: str) -> List[str]:
+    """
+    Fallback: scan <paths.rrd> for '*.rrd' and return IPs derived from filenames.
+    """
+    if not rrd_dir or not os.path.isdir(rrd_dir):
+        return []
+    return sorted({
+        os.path.splitext(name)[0]
+        for name in os.listdir(rrd_dir)
+        if name.endswith(".rrd")
+    })
+
+
+def _resolve_ip_list(settings: Dict[str, Any], args, logger) -> List[str]:
+    """
+    Build the list of IPs to export:
+
+      - If --ip is given: [args.ip]
+      - Else: read targets from the targets YAML and exclude the pseudo 'mtr_settings'
+      - If that yields nothing: fall back to scanning <paths.rrd> for '*.rrd'
+    """
+    if args.ip:
+        return [args.ip]
+
+    targets_path = resolve_targets_path(settings)
+    targets = _load_targets_from_file(targets_path, logger)
+
+    ips = [t.get("ip") for t in targets if t.get("ip") and t["ip"] != "mtr_settings"]
+
+    # uniq while preserving order
+    seen = set()
+    ips = [ip for ip in ips if not (ip in seen or seen.add(ip))]
+
+    if ips:
+        return ips
+
+    # Fallback: scan the RRD directory
+    rrd_dir = resolve_all_paths(settings)["rrd"]
+    ips = _discover_rrd_ips_from_dir(rrd_dir)
+    if ips:
+        logger.warning(f"No valid targets in {targets_path}; falling back to RRD scan ({len(ips)} ip(s)).")
+    return ips
 
 
 # -----------------------------------------------------------------------------
@@ -181,7 +248,7 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--settings", default="mtr_script_settings.yaml",
                     help="Path to YAML settings (default: mtr_script_settings.yaml)")
     ap.add_argument("--ip", help="Export only this IP")
-    ap.add_argument("--label", help="Export only this time range label (e.g. '1h')")
+    ap.add_argument("--label", help="Export only this time-range label (e.g. '1h')")
     ap.add_argument("--dry-run", action="store_true", help="Log actions without writing files")
     args = ap.parse_args(argv)
 
@@ -193,8 +260,10 @@ def main(argv: List[str] | None = None) -> int:
         return 1
 
     logger = setup_logger("timeseries_exporter", settings=settings)
+
+    # Ensure output directory root exists (and compute all paths)
     paths = resolve_all_paths(settings)
-    html_dir = resolve_html_dir(settings)  # ensures <html> exists
+    html_dir = resolve_html_dir(settings)  # ensures <paths.html> exists
 
     # Time ranges
     ranges = get_html_ranges(settings)
@@ -208,28 +277,11 @@ def main(argv: List[str] | None = None) -> int:
         logger.warning("No time ranges configured; nothing to export.")
         return 0
 
-    # IP list
-    ef _discover_rrd_ips_from_dir(rrd_dir: str):
-    if not rrd_dir or not os.path.isdir(rrd_dir):
-        return []
-    return sorted({os.path.splitext(n)[0] for n in os.listdir(rrd_dir) if n.endswith(".rrd")})
-
-if args.ip:
-    ips = [args.ip]
-else:
-    ips = [t.get("ip") for t in targets if t.get("ip") and t["ip"] != "mtr_settings"]
-    seen = set()
-    ips = [ip for ip in ips if not (ip in seen or seen.add(ip))]
+    # IP list (honor --ip, else targets file, else RRD scan)
+    ips = _resolve_ip_list(settings, args, logger)
     if not ips:
-        from modules.utils import resolve_all_paths
-        rrd_dir = resolve_all_paths(settings)["rrd"]
-        ips = _discover_rrd_ips_from_dir(rrd_dir)
-        if ips:
-            logger.warning(f"No valid targets; falling back to RRD scan ({len(ips)} ip(s)).")
-        else:
-            logger.warning("No targets and no RRDs found; nothing to export.")
-            return 0
-
+        logger.warning("No targets and no RRDs found; nothing to export.")
+        return 0
 
     out_dir = os.path.join(html_dir, "data")
     logger.info(f"Exporting {len(ips)} IP(s) over {len(ranges)} time range(s) into {out_dir}")
