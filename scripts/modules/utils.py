@@ -187,6 +187,61 @@ def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, Optional[str]]:
         "cache": cache_dir,
     }
 
+def get_path(
+    settings: Dict[str, Any],
+    key: str,
+    create: bool = False,
+    default: Optional[str] = None,
+    required: bool = False,
+    **_ignore_kwargs,
+) -> Optional[str]:
+    """
+    Resolve a single path by name, optionally creating safe directories.
+
+    Parameters
+    ----------
+    settings : dict
+        YAML settings loaded via load_settings().
+    key : str
+        One of: 'html', 'graphs', 'logs', 'cache', 'rrd', 'traceroute'.
+    create : bool, default False
+        If True, create the directory when it is safe to do so
+        (only for: html, graphs, logs, cache). For 'rrd' and 'traceroute'
+        this function NEVER creates the directory.
+    default : str | None
+        Fallback absolute/relative path to use if the resolved value is None.
+        (Will be expanded to an absolute path.)
+    required : bool, default False
+        If True and the final path is still None/missing, raise RuntimeError.
+    **_ignore_kwargs :
+        Accepted and ignored to remain backward compatible with older callers
+        that might pass extra flags like strict=True.
+
+    Returns
+    -------
+    str | None
+        The resolved absolute path, or None if not available and not required.
+
+    Notes
+    -----
+    - Uses resolve_all_paths(settings), which enforces **strict YAML-only**
+      resolution for 'traceroute' (no env/fallbacks; directory is not created).
+    - For 'rrd' and 'traceroute', this helper never creates the directory.
+    """
+    paths = resolve_all_paths(settings)
+    path = paths.get(key)
+
+    if not path and default:
+        path = _expand(default)
+
+    # Only create for known "safe" outputs
+    if path and create and key in ("html", "graphs", "logs", "cache"):
+        _mkdir_p(path)
+
+    if required and not path:
+        raise RuntimeError(f"Required path '{key}' could not be resolved (and no usable default).")
+
+    return path
 
 # -----------------------------------------------------------------------------
 # Targets file helper
