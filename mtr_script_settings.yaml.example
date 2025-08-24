@@ -27,6 +27,7 @@ paths:
 logging:
   # Per-script log levels (unchanged keys; you already use these in setup_logger)
   levels:
+    default:           INFO
     controller:        ERROR
     mtr_watchdog:      ERROR
     mtr_monitor:       ERROR
