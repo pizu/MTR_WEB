@@ -3,13 +3,15 @@ modules/controller_utils.py
 ===========================
 Small, testable helpers used by controller.py:
 
-- ControllerPolicy           → parse controller.* settings with BC aliases
-- safe_mtime(path)           → robust getmtime
-- child_env(scripts_dir)     → ensure PYTHONPATH includes scripts/
-- load_targets(config_file, logger) → normalize targets from mtr_targets.yaml
-- ConfigWatcher              → watches settings/targets YAML for changes
-- PipelineRunner             → runs the 4 pipeline stages with per-stage logs
-- WatchdogManager            → 1 watchdog process per active target
+- ControllerPolicy                    → parse controller.* settings with BC aliases
+- safe_mtime(path)                    → robust getmtime
+- child_env(scripts_dir)             → ensure PYTHONPATH includes scripts/
+- load_targets(config_file, logger)   → normalize targets from mtr_targets.yaml
+- ConfigWatcher                       → watches settings/targets YAML for changes
+- PipelineRunner                      → runs the 4 pipeline stages with per-stage logs
+- WatchdogManager                     → 1 watchdog process per active target
+- refresh_logging_from_settings(...)  → proxy to modules.utils.refresh_logger_levels
+- targets_path(settings)              → proxy to modules.utils.resolve_targets_path
 
 This module lets controller.py focus on orchestration instead of implementation.
 """
@@ -24,6 +26,18 @@ import yaml
 import subprocess
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+# NOTE: we only import the utils symbols that we want to expose as clean wrappers.
+# We NEVER configure handlers here—controller.py should create the logger via utils.setup_logger.
+try:
+    from modules.utils import (
+        refresh_logger_levels as _utils_refresh_logger_levels,
+        resolve_targets_path as _utils_resolve_targets_path,
+    )
+except Exception:
+    # Soft fallback: in unit tests or partial environments, these may be absent.
+    _utils_refresh_logger_levels = None
+    _utils_resolve_targets_path = None
 
 
 # --------------------------------------------------------------------------------------
@@ -350,3 +364,33 @@ class WatchdogManager:
         """Stop every running watchdog."""
         for ip in list(self._procs.keys()):
             self._terminate(ip, reason="shutdown")
+
+
+# --------------------------------------------------------------------------------------
+# Logging + path convenience wrappers (delegating to modules.utils)
+# --------------------------------------------------------------------------------------
+
+def refresh_logging_from_settings(settings: Dict) -> None:
+    """
+    Centralized, utils-backed way to refresh logger levels across the app.
+    This simply delegates to modules.utils.refresh_logger_levels(settings).
+
+    Keep controller.py clean by calling:
+        controller_utils.refresh_logging_from_settings(settings)
+    """
+    if _utils_refresh_logger_levels is None:
+        return
+    _utils_refresh_logger_levels(settings=settings)
+
+
+def targets_path(settings: Optional[Dict] = None) -> str:
+    """
+    Wrapper for modules.utils.resolve_targets_path(settings), exposed here
+    for callers that prefer to stay inside controller_utils.
+    """
+    if _utils_resolve_targets_path is None:
+        # Fallback if utils isn’t available for some reason:
+        base = (settings or {}).get("_meta", {}).get("settings_dir") or os.getcwd()
+        cand = os.path.join(base, "mtr_targets.yaml")
+        return os.path.abspath(cand if os.path.isfile(cand) else "mtr_targets.yaml")
+    return _utils_resolve_targets_path(settings)
