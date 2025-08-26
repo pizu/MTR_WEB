@@ -633,10 +633,11 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
             logger=logger
         )
         _save_stats(stats_path, stats)
+        clean_stats = _load_stats(stats_path)
 
         # Decide labels and persist <ip>_hops.json (consumed by rrd_exporter/html)
         _decide_label_per_hop(
-            stats,
+            clean_stats,
             hops_json_path,
             unstable_threshold=unstable_threshold,
             topk_to_show=topk_to_show,
