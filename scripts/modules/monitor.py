@@ -261,9 +261,11 @@ def _update_stats_with_snapshot(
 
         # Sticky modal "last": encourage stability unless confidence truly shifts.
         modal = max(
-            (k for k in s if isinstance(s.get(k), int)),
-            key=lambda k: s[k],
-            default=None
+           (k for k in s
+            if isinstance(s.get(k), int)
+            and k not in ("wins", "last", "_order")),
+           key=lambda k: s[k],
+           default=None
         )
         cur = s.get("last")
         if cur is None:
