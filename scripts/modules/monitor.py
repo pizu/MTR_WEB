@@ -192,10 +192,18 @@ def _load_stats(stats_path: str) -> dict:
 
 
 def _save_stats(stats_path: str, stats: dict) -> None:
-    """Write per-hop label stats to disk (pretty JSON)."""
+    """
+    Save per-hop stats to disk, stripping bookkeeping keys
+    so only actual host tokens are persisted.
+    """
+    cleaned = {}
+    for hop, data in stats.items():
+        if not isinstance(data, dict):
+            continue
+        cleaned[hop] = {k: v for k, v in data.items()
+                        if k not in ("wins", "last", "_order")}
     with open(stats_path, "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=2)
-
+        json.dump(cleaned, f, indent=2)
 
 # =============================================================================
 # Stats maintenance (rolling counts, decay, sticky modal logic)
