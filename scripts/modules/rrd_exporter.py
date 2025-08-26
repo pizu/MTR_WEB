@@ -161,6 +161,16 @@ def _parse_varies_candidates(label_text: str) -> List[str]:
             out.append(t)
     return out
 
+HOST_TOKEN = re.compile(r"(?ix)^(?:"
+                        r"(?:\d{1,3}\.){3}\d{1,3}"            # IPv4
+                        r"|(?:[A-F0-9]{0,4}:){1,7}[A-F0-9]{0,4}"  # IPv6 (loose)
+                        r"|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+                        r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)"
+                        r"|\?\?\?"
+                        r")$")
+
+def _valid_token(t: str) -> bool:
+    return bool(HOST_TOKEN.match(t or ""))
 
 # =============================================================================
 # STRICT traceroute dir
@@ -253,7 +263,7 @@ def _update_cache_with_current(cache: Dict[str, List[Dict[str, Any]]],
         lst = cache.get(key, [])
         lst = _normalize_cache_entry_list(lst)
 
-        candidates = _parse_varies_candidates(label_text)
+        candidates = [t for t in _parse_varies_candidates(label_text) if _valid_token(t)]
         if candidates:
             for ipval in candidates:
                 updated = False
