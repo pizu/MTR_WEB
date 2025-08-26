@@ -293,7 +293,13 @@ def _decide_label_per_hop(
         if hop_int < 1:
             continue
 
-        items = [(k, s[k]) for k in s if isinstance(s.get(k), int) and k not in IGNORE_HOSTS]
+        items = [
+          (k, s[k])
+          for k in s
+          if isinstance(s.get(k), int)
+          and k not in IGNORE_HOSTS
+          and k not in ("wins", "last", "_order")
+        ]
         total = sum(c for _, c in items)
         if total == 0:
             continue
