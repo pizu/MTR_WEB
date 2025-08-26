@@ -314,10 +314,24 @@ def _decide_label_per_hop(
             )
 
         if share < unstable_threshold and len(items) >= 2:
-            sample = ", ".join(h for h, _ in items[:topk_to_show])
-            host_label = f"varies ({sample})"
-        else:
-            host_label = s.get("last") or top_host
+          # Clean sample: skip bookkeeping keys, keep ??? if present
+          sample_hosts = []
+          for h, _ in items[:topk_to_show]:
+            if h in ("wins", "last", "_order"):
+              continue
+              if h not in sample_hosts:
+                sample_hosts.append(h)
+                if not sample_hosts:
+                  host_label = "varies"
+                else:
+                  host_label = f"varies ({', '.join(sample_hosts)})"
+            else:
+              # Fallback to stable last known or top host
+              last_host = s.get("last")
+              if last_host in ("wins", "last", "_order", None, ""):
+                host_label = top_host
+              else:
+                host_label = last_host
 
         labels[hop_int] = f"{hop_int}: {host_label}"
         out.append({"count": hop_int, "host": host_label})
