@@ -4,40 +4,59 @@
 modules/monitor.py
 ==================
 
-Monitors one target IP/host in a loop:
-
-  1) Run an MTR snapshot (modules.mtr_runner.run_mtr).
-  2) Detect hop-path or loss changes for logging/severity.
-  3) Update the single multi-hop RRD file (<paths.rrd>/<ip>.rrd).
-  4) Maintain rolling hop-label stats that drive "varies (...)" decisions.
-  5) Persist traceroute artifacts (strictly under YAML paths.traceroute) via modules.graph_utils.
-  6) Hot-reload mtr_script_settings.yaml without restart, and refresh logger levels.
-
-Key design choices
-------------------
-- Strict traceroute path: read/write ONLY under settings['paths']['traceroute'].
-  The writer is centralized in modules.graph_utils.* functions.
-- Canonical entrypoint signature: monitor_target(ip, settings=None, **kwargs)
-  Compatible with the watchdog calling convention. 'source_ip' and 'logger'
-  can be passed through kwargs if desired.
-
-Inputs
-------
-- ip (str):      Target IP/host.
-- settings (dict): YAML settings loaded by modules.utils.load_settings(..).
-                   The dict should include settings['_meta']['settings_path'].
-- kwargs:
-    - source_ip (optional):  Source address for MTR runner.
-    - logger (optional):     logging.Logger to reuse; created if not supplied.
-
-Outputs
+Purpose
 -------
-- Updates <paths.rrd>/<ip>.rrd each iteration.
-- Writes/updates:
-    <paths.traceroute>/<ip>_hops_stats.json
-    <paths.traceroute>/<ip>_hops.json
-    <paths.traceroute>/<ip>.trace.txt
-    <paths.traceroute>/<ip>.json
+Continuously monitor a single target (IP/Host) with MTR snapshots, detect
+hop-path/loss changes, maintain per-hop label statistics (to decide when a hop
+"varies"), and keep the per-target multi-hop RRD updated.
+
+This file is designed to be **drop-in** for the MTR_WEB project and to obey
+settings from `mtr_script_settings.yaml` (hot-reloaded at runtime).
+
+What this module does each loop
+-------------------------------
+1) Run a single MTR snapshot for the target (via modules.mtr_runner.run_mtr).
+2) Compare the hop path to the previous snapshot (via modules.severity.hops_changed)
+   and log any changes with severity tagging (via modules.severity.evaluate_severity_rules).
+3) Track per-hop packet loss changes and log them with severity.
+4) Update the per-target multi-hop RRD file with hop metrics (via modules.rrd_handler.update_rrd).
+5) Maintain rolling label statistics (per hop) so legends can show either a stable host
+   or a "varies (a, b, c)" sample. This is persisted under settings.paths.traceroute.
+6) Persist traceroute artifacts (strictly under YAML settings.paths.traceroute)
+   using modules.graph_utils.save_trace_and_json and update_hop_labels_only.
+7) Hot-reload mtr_script_settings.yaml on the fly (interval, label knobs, severity rules,
+   logging levels, and path resolutions all refresh without restarting the process).
+
+Key choices
+-----------
+- STRICT traceroute path policy: this module writes traceroute artifacts ONLY
+  under settings['paths']['traceroute']; if that directory is missing, we fail fast.
+- Labels reflect exactly the tokens seen under the MTR "Host" column:
+  IPs, DNS names, and the literal "???" for no reply (or "(waiting for reply)" if we had
+  an empty placeholder). We never allow bookkeeping keys ("wins", "last", "_order")
+  to leak into the user-visible labels.
+
+YAML knobs in mtr_script_settings.yaml
+--------------------------------------
+labels:
+  reset_mode: "from_first_diff"   # none | from_first_diff | realign_then_reset | all
+  unstable_threshold: 0.45        # if top share < threshold (and there is competition) => varies(...)
+  topk_to_show: 3                 # in "varies (a, b, c)" show up to this many tokens (deduplicated)
+  majority_window: 200            # sliding window size for counts (simple decay)
+  sticky_min_wins: 3              # hysteresis for the "last" modal token
+
+interval_seconds: 60              # MTR loop interval (seconds)
+log_severity_rules: []            # optional list of rules (see modules.severity)
+
+paths:
+  rrd:        /opt/scripts/MTR_WEB/data
+  html:       /opt/scripts/MTR_WEB/html
+  graphs:     /opt/scripts/MTR_WEB/html/graphs
+  logs:       /opt/scripts/MTR_WEB/logs
+  traceroute: /opt/scripts/MTR_WEB/traceroute
+
+Logging levels are controlled centrally by settings['logging_levels'] and are
+applied/updated live by modules.utils.refresh_logger_levels().
 
 Dependencies
 ------------
@@ -65,22 +84,23 @@ from modules.graph_utils import save_trace_and_json, update_hop_labels_only
 from modules.utils import load_settings, resolve_all_paths, setup_logger, refresh_logger_levels
 
 
-# ---------------------------------------------------------------------------
-# Label tunables (can be overridden by YAML at runtime)
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Label tunables (defaults; all can be overridden by YAML at runtime)
+# =============================================================================
 
 UNSTABLE_THRESHOLD = 0.45   # if top share < threshold and competition exists => "varies (...)"
 TOPK_TO_SHOW       = 3
 MAJORITY_WINDOW    = 200
 STICKY_MIN_WINS    = 3
-IGNORE_HOSTS       = set()  # hosts to ignore in label tallies (optional)
+IGNORE_HOSTS       = set()  # optional: add tokens to ignore in label tallies
 
 
-# ---------------------------------------------------------------------------
-# YAML-driven label config helper
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Helpers: YAML-driven label config, settings paths, timestamps
+# =============================================================================
 
 def _label_cfg(settings: dict) -> dict:
+    """Return label-related knobs merged from YAML (with sane defaults)."""
     labels = settings.get("labels") or {}
     return {
         "reset_mode":         str(labels.get("reset_mode", "from_first_diff")).strip().lower(),
@@ -91,27 +111,79 @@ def _label_cfg(settings: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Traceroute/label file paths (strictly under YAML paths.traceroute)
-# ---------------------------------------------------------------------------
+def _settings_path_from_settings(settings: dict) -> Optional[str]:
+    """
+    Locate the live settings file path so we can hot-reload:
+      1) settings['_meta']['settings_path'] (preferred)
+      2) repo-root/mtr_script_settings.yaml (fallback if present)
+    """
+    meta = settings.get("_meta") or {}
+    sp = meta.get("settings_path")
+    if isinstance(sp, str) and os.path.isfile(sp):
+        return sp
+    # Fallback: assume repo root has mtr_script_settings.yaml
+    modules_dir = os.path.abspath(os.path.dirname(__file__))           # .../scripts/modules
+    scripts_dir = os.path.abspath(os.path.join(modules_dir, os.pardir))
+    repo_root   = os.path.abspath(os.path.join(scripts_dir, os.pardir))
+    fallback = os.path.join(repo_root, "mtr_script_settings.yaml")
+    return fallback if os.path.isfile(fallback) else None
+
+
+def _safe_mtime(path: Optional[str]) -> float:
+    """Return the file mtime or 0.0 on any error (used for hot-reload)."""
+    if not path:
+        return 0.0
+    try:
+        return os.path.getmtime(path)
+    except Exception:
+        return 0.0
+
+
+# =============================================================================
+# Host token normalization (match what the MTR "Host" column shows)
+# =============================================================================
+
+WAITING = "(waiting for reply)"  # used when host is empty/None/"*" / "?"
+
+def normalize_host_label(host) -> str:
+    """
+    Map raw MTR 'host' values to the exact token we want to display and tally.
+    - Keep IPs, DNS names, and the literal '???' exactly as emitted by MTR JSON.
+    - If host is None/empty/'*'/'?' → show '(waiting for reply)'.
+    Note: your MTR JSON uses "???" as the unresolved token; we keep that verbatim.
+    """
+    if host is None:
+        return WAITING
+    h = str(host).strip()
+    if not h or h in {"*", "?"}:
+        return WAITING
+    return h  # includes "???", IPs, or DNS names unchanged
+
+
+# =============================================================================
+# Traceroute/label files (STRICTLY under YAML paths.traceroute)
+# =============================================================================
 
 def _label_paths(ip: str, settings: dict) -> tuple[str, str]:
     """
     Return (stats_path, hops_json_path) under the STRICT traceroute directory.
 
-    The traceroute directory is resolved via resolve_all_paths(settings)['traceroute'].
-    The directory is created if missing (writer-only logic).
+    Writers must refuse to write if settings.paths.traceroute is missing.
     """
     paths = resolve_all_paths(settings)
     tr_dir = paths.get("traceroute")
     if not tr_dir:
-        raise RuntimeError("settings.paths.traceroute missing or not a directory (cannot write traceroute artifacts)")
+        raise RuntimeError(
+            "settings.paths.traceroute is missing or not a directory "
+            "(cannot write traceroute label artifacts)"
+        )
     os.makedirs(tr_dir, exist_ok=True)
     stem = os.path.join(tr_dir, ip)
     return stem + "_hops_stats.json", stem + "_hops.json"
 
 
 def _load_stats(stats_path: str) -> dict:
+    """Load per-hop label stats; return {} on any error."""
     try:
         with open(stats_path, encoding="utf-8") as f:
             return json.load(f) or {}
@@ -120,13 +192,14 @@ def _load_stats(stats_path: str) -> dict:
 
 
 def _save_stats(stats_path: str, stats: dict) -> None:
+    """Write per-hop label stats to disk (pretty JSON)."""
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
 
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Stats maintenance (rolling counts, decay, sticky modal logic)
-# ---------------------------------------------------------------------------
+# =============================================================================
 
 def _update_stats_with_snapshot(
     stats: dict,
@@ -135,6 +208,15 @@ def _update_stats_with_snapshot(
     sticky_min_wins: int,
     logger=None
 ) -> dict:
+    """
+    Update per-hop statistics with the current snapshot.
+    We count how many times each token has appeared per hop index, apply a simple
+    decay once the bucket exceeds majority_window, and maintain a "sticky" modal
+    ('last' + 'wins') to stabilize labels when the top token fluctuates.
+
+    Expected hop shape (from run_mtr JSON):
+      h = {"count": <hop_index>, "host": <token>, "Loss%": <float>, ...}
+    """
     for h in hops:
         raw = h.get("count", 0)
         try:
@@ -147,29 +229,42 @@ def _update_stats_with_snapshot(
             continue
 
         hop_idx = str(hop_num)
-        host = h.get("host")
+
+        # Normalize the host token to match exactly what we want to display/tally.
+        host = normalize_host_label(h.get("host"))
         if host is None:
             continue
 
+        # Initialize hop bucket shape.
         s = stats.setdefault(hop_idx, {"_order": [], "last": None, "wins": 0})
+
+        # New token: create counter and put at front of LRU-like order.
         if host not in s:
             s[host] = 0
             s["_order"].insert(0, host)
+
+        # Count this appearance.
         s[host] += 1
 
+        # Simple decay when cumulative counts exceed majority_window.
         total_counts = sum(v for k, v in s.items() if isinstance(s.get(k), int))
         if total_counts > majority_window:
-            # simple decay: remove one count from the tail-most item
+            # Remove one count from the tail-most token in _order with a positive count.
             for key in list(s["_order"])[::-1]:
                 if isinstance(s.get(key), int) and s[key] > 0:
                     s[key] -= 1
                     if s[key] == 0:
+                        # Drop tokens that decayed to zero; keep _order in sync.
                         del s[key]
                         s["_order"] = [x for x in s["_order"] if x != key]
                     break
 
-        # sticky modal
-        modal = max((k for k in s if isinstance(s.get(k), int)), key=lambda k: s[k], default=None)
+        # Sticky modal "last": encourage stability unless confidence truly shifts.
+        modal = max(
+            (k for k in s if isinstance(s.get(k), int)),
+            key=lambda k: s[k],
+            default=None
+        )
         cur = s.get("last")
         if cur is None:
             s["last"] = modal
@@ -185,11 +280,12 @@ def _update_stats_with_snapshot(
     return stats
 
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Path-change hygiene (reset/realign policies)
-# ---------------------------------------------------------------------------
+# =============================================================================
 
 def _first_diff_index(prev_hops: list, curr_hops: list) -> Optional[int]:
+    """Return the first hop index (1-based) where host tokens differ; None if identical length/content."""
     n = min(len(prev_hops), len(curr_hops))
     for i in range(n):
         if (prev_hops[i] or {}).get("host") != (curr_hops[i] or {}).get("host"):
@@ -200,6 +296,7 @@ def _first_diff_index(prev_hops: list, curr_hops: list) -> Optional[int]:
 
 
 def _reset_stats_from(stats: dict, start_hop_int: int, logger=None) -> None:
+    """Remove stats buckets for hop indices >= start_hop_int (inclusive)."""
     to_del = [k for k in stats.keys() if k.isdigit() and int(k) >= start_hop_int]
     for k in to_del:
         stats.pop(k, None)
@@ -208,6 +305,10 @@ def _reset_stats_from(stats: dict, start_hop_int: int, logger=None) -> None:
 
 
 def _realign_then_reset(stats: dict, prev_hops: list, curr_hops: list, logger=None) -> None:
+    """
+    Attempt to carry over buckets by matching the previous modal token to the
+    new hop indices, then ensure a full set of buckets for current hops.
+    """
     modal_to_oldidx = {}
     for idx_str, s in list(stats.items()):
         last = s.get("last")
@@ -256,6 +357,7 @@ def _realign_then_reset(stats: dict, prev_hops: list, curr_hops: list, logger=No
 
 
 def _apply_reset_policy(stats: dict, prev_hops: list, curr_hops: list, reset_mode: str, logger=None) -> None:
+    """Apply the configured reset policy when a path change is detected."""
     first_diff = _first_diff_index(prev_hops, curr_hops)
     if first_diff is None:
         return
@@ -274,9 +376,9 @@ def _apply_reset_policy(stats: dict, prev_hops: list, curr_hops: list, reset_mod
     _reset_stats_from(stats, first_diff, logger=logger)  # default: from_first_diff
 
 
-# ---------------------------------------------------------------------------
-# Decide labels per hop and persist <ip>_hops.json
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Decide labels per hop and persist <ip>_hops.json (consumed by rrd_exporter/html)
+# =============================================================================
 
 def _decide_label_per_hop(
     stats: dict,
@@ -285,6 +387,13 @@ def _decide_label_per_hop(
     topk_to_show: int,
     logger=None
 ) -> dict:
+    """
+    Decide the visible legend label per hop based on rolling statistics:
+      - If one token clearly dominates (share >= unstable_threshold, or no competition), show the stable token.
+      - If multiple tokens compete and the top share is below threshold, show "varies (a, b, ...)".
+    Bookkeeping keys ('wins','last','_order') are never allowed to appear in labels.
+    The literal '???' is kept when it appears from MTR.
+    """
     labels = {}
     out = []
 
@@ -293,16 +402,19 @@ def _decide_label_per_hop(
         if hop_int < 1:
             continue
 
+        # Consider only real token counters; drop bookkeeping keys.
         items = [
-          (k, s[k])
-          for k in s
-          if isinstance(s.get(k), int)
-          and k not in IGNORE_HOSTS
-          and k not in ("wins", "last", "_order")
+            (k, s[k])
+            for k in s
+            if isinstance(s.get(k), int)
+            and k not in IGNORE_HOSTS
+            and k not in ("wins", "last", "_order")
         ]
         total = sum(c for _, c in items)
         if total == 0:
             continue
+
+        # Sort by count descending; take the top candidate.
         items.sort(key=lambda kv: -kv[1])
         top_host, top_count = items[0]
         share = top_count / total
@@ -313,29 +425,29 @@ def _decide_label_per_hop(
                 f"share={share:.2f} items={items[:topk_to_show]}"
             )
 
+        # Build label text
         if share < unstable_threshold and len(items) >= 2:
-          # Clean sample: skip bookkeeping keys, keep ??? if present
-          sample_hosts = []
-          for h, _ in items[:topk_to_show]:
-            if h in ("wins", "last", "_order"):
-              continue
-              if h not in sample_hosts:
-                sample_hosts.append(h)
-                if not sample_hosts:
-                  host_label = "varies"
-                else:
-                  host_label = f"varies ({', '.join(sample_hosts)})"
-            else:
-              # Fallback to stable last known or top host
-              last_host = s.get("last")
-              if last_host in ("wins", "last", "_order", None, ""):
+            # Unstable competition → 'varies (a, b, ...)'.
+            # Keep tokens as-is (including '???'); never include bookkeeping keys.
+            sample_hosts: List[str] = []
+            for token, _cnt in items[:topk_to_show]:
+                if token in ("wins", "last", "_order"):
+                    continue
+                if token not in sample_hosts:
+                    sample_hosts.append(token)
+            host_label = f"varies ({', '.join(sample_hosts)})" if sample_hosts else "varies"
+        else:
+            # Stable case → prefer sticky modal 'last' if valid; otherwise current top.
+            last_host = s.get("last")
+            if last_host in ("wins", "last", "_order", None, ""):
                 host_label = top_host
-              else:
+            else:
                 host_label = last_host
 
         labels[hop_int] = f"{hop_int}: {host_label}"
         out.append({"count": hop_int, "host": host_label})
 
+    # Persist hop labels (human-friendly legend) for rrd_exporter/html to use.
     if out:
         with open(hops_json_path, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
@@ -343,35 +455,9 @@ def _decide_label_per_hop(
     return labels
 
 
-# ---------------------------------------------------------------------------
-# Settings path helpers (for hot-reload)
-# ---------------------------------------------------------------------------
-
-def _settings_path_from_settings(settings: dict) -> Optional[str]:
-    meta = settings.get("_meta") or {}
-    sp = meta.get("settings_path")
-    if isinstance(sp, str) and os.path.isfile(sp):
-        return sp
-    # Fallback: assume repo root has mtr_script_settings.yaml
-    modules_dir = os.path.abspath(os.path.dirname(__file__))           # .../scripts/modules
-    scripts_dir = os.path.abspath(os.path.join(modules_dir, os.pardir))
-    repo_root   = os.path.abspath(os.path.join(scripts_dir, os.pardir))
-    fallback = os.path.join(repo_root, "mtr_script_settings.yaml")
-    return fallback if os.path.isfile(fallback) else None
-
-
-def _safe_mtime(path: Optional[str]) -> float:
-    if not path:
-        return 0.0
-    try:
-        return os.path.getmtime(path)
-    except Exception:
-        return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Main monitor entrypoint
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Main entrypoint
+# =============================================================================
 
 def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
     """
@@ -381,11 +467,18 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
     ----------
     ip : str
         Destination IP/host to monitor.
-    settings : dict | None
+    settings : dict (required)
         Settings dict loaded via modules.utils.load_settings(...).
+        Must include '_meta.settings_path' for hot-reload.
     kwargs :
         source_ip (optional): passed through to run_mtr(..).
         logger    (optional): logging.Logger to use; created if not provided.
+
+    Behavior
+    --------
+    - Runs forever (until process is terminated).
+    - Hot-reloads settings when the YAML file mtime changes.
+    - Respects all path resolutions and logging levels from settings.
     """
     if settings is None:
         raise RuntimeError("monitor_target requires a 'settings' dict")
@@ -394,7 +487,7 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
     source_ip = kwargs.get("source_ip")
     logger = kwargs.get("logger") or setup_logger(ip, settings=settings)
 
-    # Resolve paths and ensure RRD directory exists (writer updates it)
+    # Resolve paths and ensure RRD directory exists (writer updates it).
     paths = resolve_all_paths(settings)
     rrd_dir = paths.get("rrd") or "data"
     os.makedirs(rrd_dir, exist_ok=True)
@@ -410,7 +503,7 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
     severity_rules = settings.get("log_severity_rules", [])
     debug_rrd_log  = bool(settings.get("rrd", {}).get("debug_values", False))
 
-    # Ensure the multi-hop RRD exists
+    # Ensure the multi-hop RRD exists (single file, multiple DS for all hops/metrics).
     init_rrd(rrd_path, settings, logger)
 
     prev_hops: List[Dict[str, Any]] = []
@@ -433,10 +526,10 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
                 rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
 
                 # Refresh knobs
-                label_knobs   = _label_cfg(settings)
-                interval      = int(settings.get("interval_seconds", interval))
+                label_knobs    = _label_cfg(settings)
+                interval       = int(settings.get("interval_seconds", interval))
                 severity_rules = settings.get("log_severity_rules", severity_rules)
-                debug_rrd_log = bool(settings.get("rrd", {}).get("debug_values", debug_rrd_log))
+                debug_rrd_log  = bool(settings.get("rrd", {}).get("debug_values", debug_rrd_log))
 
                 last_settings_mtime = curr_mtime
                 logger.info(f"[{ip}] Settings reloaded. interval={interval}s, rrd_dir={rrd_dir}")
@@ -484,6 +577,7 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
                 "hop_removed": bool(diff.get("iterable_item_removed")),
             }
             for key, value in diff.get("values_changed", {}).items():
+                # Example key: "root[3]" → hop index 3 (0-based in diff → show raw index string)
                 hop_index = key.split("[")[-1].rstrip("]")
                 tag, level = evaluate_severity_rules(severity_rules, context)
                 log_fn = getattr(logger, (level or "info").lower(), logger.info)
@@ -530,7 +624,7 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
         )
         _save_stats(stats_path, stats)
 
-        # Decide labels, write <ip>_hops.json (consumed by rrd_exporter/html)
+        # Decide labels and persist <ip>_hops.json (consumed by rrd_exporter/html)
         _decide_label_per_hop(
             stats,
             hops_json_path,
