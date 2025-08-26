@@ -83,7 +83,6 @@ from modules.severity import evaluate_severity_rules, hops_changed
 from modules.graph_utils import save_trace_and_json, update_hop_labels_only
 from modules.utils import load_settings, resolve_all_paths, setup_logger, refresh_logger_levels
 
-
 # =============================================================================
 # Label tunables (defaults; all can be overridden by YAML at runtime)
 # =============================================================================
@@ -144,6 +143,7 @@ def _safe_mtime(path: Optional[str]) -> float:
 # =============================================================================
 
 WAITING = "(waiting for reply)"  # used when host is empty/None/"*" / "?"
+CONTROL_KEYS = {"wins", "last", "_order"}
 
 def normalize_host_label(host) -> str:
     """
@@ -157,7 +157,7 @@ def normalize_host_label(host) -> str:
     h = str(host).strip()
     if not h or h in {"*", "?"}:
         return WAITING
-    return h  # includes "???", IPs, or DNS names unchanged
+    return h  # keep IPs, DNS names, and literal "???"
 
 
 # =============================================================================
@@ -170,38 +170,38 @@ def _label_paths(ip: str, settings: dict) -> tuple[str, str]:
 
     Writers must refuse to write if settings.paths.traceroute is missing.
     """
-    paths = resolve_all_paths(settings)
-    tr_dir = paths.get("traceroute")
+    tr_dir = resolve_all_paths(settings).get("traceroute")
     if not tr_dir:
-        raise RuntimeError(
-            "settings.paths.traceroute is missing or not a directory "
-            "(cannot write traceroute label artifacts)"
-        )
+        raise RuntimeError("settings.paths.traceroute is missing")
     os.makedirs(tr_dir, exist_ok=True)
     stem = os.path.join(tr_dir, ip)
     return stem + "_hops_stats.json", stem + "_hops.json"
-
 
 def _load_stats(stats_path: str) -> dict:
     """Load per-hop label stats; return {} on any error."""
     try:
         with open(stats_path, encoding="utf-8") as f:
-            return json.load(f) or {}
+            raw = json.load(f) or {}
     except Exception:
         return {}
+    # Sanitize on read
+    return _strip_control_keys(raw)
 
+def _strip_control_keys(d: dict) -> dict:
+    # Remove bookkeeping keys per hop bucket
+    cleaned = {}
+    for hop, data in (d or {}).items():
+        if not isinstance(data, dict):
+            continue
+        cleaned[hop] = {k: v for k, v in data.items() if k not in CONTROL_KEYS}
+    return cleaned
 
 def _save_stats(stats_path: str, stats: dict) -> None:
     """
     Save per-hop stats to disk, stripping bookkeeping keys
     so only actual host tokens are persisted.
     """
-    cleaned = {}
-    for hop, data in stats.items():
-        if not isinstance(data, dict):
-            continue
-        cleaned[hop] = {k: v for k, v in data.items()
-                        if k not in ("wins", "last", "_order")}
+    cleaned = _strip_control_keys(stats or {})
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(cleaned, f, indent=2)
 
@@ -269,9 +269,10 @@ def _update_stats_with_snapshot(
 
         # Sticky modal "last": encourage stability unless confidence truly shifts.
         modal = max(
-           (k for k in s
-            if isinstance(s.get(k), int)
-            and k not in ("wins", "last", "_order")),
+           (
+              k for k in s
+              if isinstance(s.get(k), int) and k not in CONTROL_KEYS
+           ),
            key=lambda k: s[k],
            default=None
         )
