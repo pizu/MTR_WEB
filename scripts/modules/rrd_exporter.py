@@ -404,6 +404,18 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
 
         hop_entries.append(entry)
 
+    events = []
+    for h in hop_entries:
+        if h.get("varies"):
+            for ch in h.get("changes_in_window", []):
+                events.append({
+                    "type": "varies",
+                    "hop": h["hop"],
+                    "ip": ch.get("ip"),
+                    "first": ch.get("first"),
+                    "last": ch.get("last"),
+                })
+
     out = {
         "ip": ip,
         "label": label,
@@ -412,7 +424,8 @@ def export_ip_timerange_json(ip: str, settings: dict, label: str, seconds: int, 
         "timestamps": labels_hhmm,
         "epoch": epochs,
         "rrd_window": {"start_epoch": window_start, "end_epoch": window_end, "step": step},
-        "hops": hop_entries
+        "hops": hop_entries,
+        "events": events
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
