@@ -77,6 +77,7 @@ def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, str]:
             return os.path.abspath(p)
         return None
 
+    # Existing keys
     out["data_dir"] = must("data_dir") or os.path.abspath("data")
     out["html_dir"] = must("html_dir") or os.path.abspath("html")
     out["html_data_dir"] = must("html_data_dir") or os.path.join(out["html_dir"], "data")
@@ -92,6 +93,12 @@ def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, str]:
 
     out["pipeline_logs_dir"] = must("pipeline_logs_dir") or os.path.join(out["logs_dir"], "")
     out["locks_dir"] = must("locks_dir") or os.path.join(out["data_dir"], ".locks")
+
+    # NEW: Provide an explicit RRD directory for modules that expect 'rrd'
+    # If paths.rrd is not set in YAML, alias it to data_dir to remain backward-compatible.
+    rrd_dir = must("rrd") or out["data_dir"]
+    out["rrd"] = rrd_dir
+
     return out
 
 
