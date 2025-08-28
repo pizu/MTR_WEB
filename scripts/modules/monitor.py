@@ -626,24 +626,24 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
             _apply_reset_policy(stats, prev_hops, hops, reset_mode, logger=logger)
 
         # Update stats with the current snapshot (hop >= 1 only)
-        stats = _update_stats_with_snapshot(
-            stats,
-            hops,
-            majority_window=majority_window,
-            sticky_min_wins=sticky_min_wins,
-            logger=logger
-        )
+        # Update counters
+        stats = _update_stats_with_snapshot(stats, hops,
+                                            majority_window=majority_window,
+                                            sticky_min_wins=sticky_min_wins,
+                                            logger=logger)
+        # Save a sanitized version (removes wins/last/_order)
         _save_stats(stats_path, stats)
+        # *** Reload the clean file ***
         clean_stats = _load_stats(stats_path)
-
-        # Decide labels and persist <ip>_hops.json (consumed by rrd_exporter/html)
+        # Build labels from the clean snapshot only
         _decide_label_per_hop(
-            clean_stats,
-            hops_json_path,
-            unstable_threshold=unstable_threshold,
-            topk_to_show=topk_to_show,
-            logger=logger
+           clean_stats,
+           hops_json_path,
+           unstable_threshold=unstable_threshold,
+           topk_to_show=topk_to_show,
+           logger=logger
         )
+
 
         # Synchronize labels + write traceroute artifacts via strict writer
         update_hop_labels_only(ip, hops, settings, logger)
