@@ -184,106 +184,99 @@ def monitor_target(ip: str, settings: Optional[dict] = None, **kwargs) -> None:
 
     while True:
         # ---------- Hot reload ----------
-        curr_mtime = _safe_mtime(SETTINGS_FILE)
-        if SETTINGS_FILE and curr_mtime > 0 and curr_mtime != last_settings_mtime:
-            try:
-                settings = load_settings(SETTINGS_FILE)
-                refresh_logger_levels(settings)  # sync live logger levels
+      curr_mtime = _safe_mtime(SETTINGS_FILE)
+      if SETTINGS_FILE and curr_mtime > 0 and curr_mtime != last_settings_mtime:
+        try:
+          settings = load_settings(SETTINGS_FILE)
+          refresh_logger_levels(settings)  # sync live logger levels
+          # Re-resolve paths (rrd dir may change)
+          paths = resolve_all_paths(settings)
+          rrd_dir = paths["rrd"]
+          os.makedirs(rrd_dir, exist_ok=True)
+          rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
 
-                # Re-resolve paths (rrd dir may change)
-                paths = resolve_all_paths(settings)
-                rrd_dir = paths["rrd"]
-                os.makedirs(rrd_dir, exist_ok=True)
-                rrd_path = os.path.join(rrd_dir, f"{ip}.rrd")
+          # Refresh strict pulls
+          interval       = int(settings["interval_seconds"])
+          severity_rules = settings.get("log_severity_rules")
+          debug_rrd_log  = bool(settings["rrd"]["debug_values"])
 
-                # Refresh strict pulls
-                interval       = int(settings["interval_seconds"])
-                severity_rules = settings.get("log_severity_rules")
-                debug_rrd_log  = bool(settings["rrd"]["debug_values"])
+          last_settings_mtime = curr_mtime
+          logger.info(f"[{ip}] Settings reloaded. interval={interval}s, rrd_dir={rrd_dir}")
+        except Exception as e:
+          logger.error(f"[{ip}] Failed to hot-reload settings: {e}")
 
-                last_settings_mtime = curr_mtime
-                logger.info(f"[{ip}] Settings reloaded. interval={interval}s, rrd_dir={rrd_dir}")
-            except Exception as e:
-                logger.error(f"[{ip}] Failed to hot-reload settings: {e}")
+      # ---------- One MTR snapshot ----------
+      hops = run_mtr(ip, source_ip, logger, settings=settings)
+      if not hops:
+        logger.warning(f"[{ip}] MTR returned no data — unreachable/command failed")
+        time.sleep(interval)
+        continue
 
-        # ---------- One MTR snapshot ----------
-        hops = run_mtr(ip, source_ip, logger, settings=settings)
-        if not hops:
-            logger.warning(f"[{ip}] MTR returned no data — unreachable/command failed")
-            time.sleep(interval)
+      # ---------- Path change detection ----------
+      hop_path_changed = hops_changed(prev_hops, hops)
+
+      # ---------- Loss tracking (aggregate % per hop from snapshot) ----------
+      curr_loss_state: Dict[int, float] = {}
+      for h in hops:
+        try:
+          hop_num = int(h.get("count", 0))
+        except (TypeError, ValueError):
+          continue
+          if hop_num < 1:
             continue
-
-        # ---------- Path change detection ----------
-        hop_path_changed = hops_changed(prev_hops, hops)
-
-        # ---------- Loss tracking (aggregate % per hop from snapshot) ----------
-        curr_loss_state: Dict[int, float] = {}
-        for h in hops:
-            try:
-                hop_num = int(h.get("count", 0))
-            except (TypeError, ValueError):
-                continue
-            if hop_num < 1:
-                continue
-            try:
-                lf = float(h.get("Loss%", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                lf = 0.0
+          try:
+            lf = float(h.get("Loss%", 0.0) or 0.0)
+          except (TypeError, ValueError):
+            lf = 0.0
             if lf > 0.0:
-                curr_loss_state[hop_num] = round(lf, 2)
+              curr_loss_state[hop_num] = round(lf, 2)
+              
+         loss_changed = (curr_loss_state != prev_loss_state)
 
-        loss_changed = (curr_loss_state != prev_loss_state)
-
-        # ---------- Change logging with severity ----------
-        if hop_path_changed:
-            diff = DeepDiff([h.get("host") for h in prev_hops],
-                            [h.get("host") for h in hops],
-                            ignore_order=False)
-            context = {
-                "hop_changed": True,
-                "hop_added":   bool(diff.get("iterable_item_added")),
-                "hop_removed": bool(diff.get("iterable_item_removed")),
-            }
-            for key, value in diff.get("values_changed", {}).items():
-                # Example key: "root[3]" → hop index 3 (0-based in diff)
-                hop_index = key.split("[")[-1].rstrip("]")
-                tag, level = evaluate_severity_rules(severity_rules, context)
-                log_fn = getattr(logger, (level or "info").lower(), logger.info)
-                msg = f"[{ip}] Hop {hop_index} changed from {value.get('old_value')} to {value.get('new_value')}"
-                log_fn(f"[{tag}] {msg}" if tag else msg)
-
-        if loss_changed:
-            for hop_num, loss in curr_loss_state.items():
-                context = {
-                    "loss": loss,
-                    "prev_loss": prev_loss_state.get(hop_num, 0.0),
-                    "hop_changed": hop_path_changed,
-                }
-                tag, level = evaluate_severity_rules(severity_rules, context)
-                default_fn = logger.warning if loss > 0 else logger.info
-                log_fn = getattr(logger, (level or ("WARNING" if loss > 0 else "INFO")).lower(), default_fn)
-                msg = f"[{ip}] Loss at hop {hop_num}: {loss}% (prev: {context['prev_loss']}%)"
-                log_fn(f"[{tag}] {msg}" if tag else msg)
+          # ---------- Change logging with severity ----------
+       if hop_path_changed:
+         diff = DeepDiff([h.get("host") for h in prev_hops],
+                         [h.get("host") for h in hops],
+                         ignore_order=False)
+         context = {"hop_changed": True,
+                    "hop_added":   bool(diff.get("iterable_item_added")),
+                    "hop_removed": bool(diff.get("iterable_item_removed"))}
+         for key, value in diff.get("values_changed", {}).items():
+           hop_index = key.split("[")[-1].rstrip("]")
+           tag, level = evaluate_severity_rules(severity_rules, context)
+           log_fn = getattr(logger, (level or "info").lower(), logger.info)
+           sg = f"[{ip}] Hop {hop_index} changed from {value.get('old_value')} to {value.get('new_value')}"
+           log_fn(f"[{tag}] {msg}" if tag else msg)
+           
+       if loss_changed:
+         for hop_num, loss in curr_loss_state.items():
+           context = {"loss": loss,
+                      "prev_loss": prev_loss_state.get(hop_num, 0.0),
+                      "hop_changed": hop_path_changed}
+           tag, level = evaluate_severity_rules(severity_rules, context)
+           default_fn = logger.warning if loss > 0 else logger.info
+           log_fn = getattr(logger, (level or ("WARNING" if loss > 0 else "INFO")).lower(), default_fn)
+           msg = f"[{ip}] Loss at hop {hop_num}: {loss}% (prev: {context['prev_loss']}%)"
+           log_fn(f"[{tag}] {msg}" if tag else msg)
 
         # ---------- Update RRD with current snapshot ----------
         update_rrd(rrd_path, hops, ip, settings, debug_rrd_log, logger=logger)
 
         # ---------- SINGLE WRITER: graph_utils handles all traceroute artifacts ----------
-        write_trace = bool(hop_path_changed or loss_changed)
-        try:
-            update_labels_and_traces(
-                ip=ip,
-                hops=hops,
-                settings=settings,
-                write_trace_json=write_trace,
-                prev_hops=prev_hops,
-                logger=logger
-            )
-        except Exception as e:
-            logger.error(f"[{ip}] graph_utils update failed: {e}")
-
+      write_trace = bool(hop_path_changed or loss_changed)
+      try:
+        update_labels_and_traces(
+          ip=ip,
+          hops=hops,
+          settings=settings,
+          write_trace_json=write_trace,
+          prev_hops=prev_hops,
+          logger=logger
+        )
+      
+      except Exception as e:
+        logger.error(f"[{ip}] graph_utils update failed: {e}")
         # ---------- Bookkeeping for next iteration ----------
         prev_hops = hops
         prev_loss_state = curr_loss_state
-
         time.sleep(interval)
