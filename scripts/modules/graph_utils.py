@@ -1,208 +1,144 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-modules/graph_utils.py (STRICT TRACEROUTE PATH)
+modules/graph_utils.py (single-writer architecture)
 
-- Stabilizes hop labels into <traceroute>/<ip>_hops.json.
-- Emits hop-change events and whole-path intervals under logs/.
+Responsibilities:
+- Maintain per-hop stats for labels (varies detection).
+- Persist sanitized hop stats JSON (no bookkeeping keys).
+- Build and persist hop labels JSON.
+- Optionally persist full trace JSON when asked.
+
+Inputs:
+- ip (str)
+- hops (list of dicts from run_mtr JSON: each has 'count' and 'host')
+- settings (dict) -> uses settings['paths']['traceroute'] and settings['labels'] knobs:
+    reset_mode, unstable_threshold, topk_to_show, majority_window, sticky_min_wins
+
+Public API:
+- update_labels_and_traces(ip, hops, settings, write_trace_json=False, logger=None)
+    -> updates stats & labels; if write_trace_json=True also writes trace JSON.
 """
+
+from __future__ import annotations
 
 import os
 import json
-from datetime import datetime, timezone
-from typing import Dict, List, Tuple, Optional
-from modules.utils import resolve_all_paths
+from typing import Dict, Any, List, Tuple, Optional
 
-UNSTABLE_THRESHOLD = 0.45
-TOPK_TO_SHOW       = 3
-MAJORITY_WINDOW    = 200
-STICKY_MIN_WINS    = 3
-IGNORE_HOSTS       = set()
-RESERVED_KEYS      = {"_order", "last", "wins"}
+# --------------------------
+# Config / constants
+# --------------------------
+RESERVED_KEYS = {"_order", "last", "wins"}
+WAITING = "(waiting for reply)"  # only used if a host field is empty/*/?
+# NOTE: We keep literal "???" exactly as emitted by MTR when unresolved.
 
-def _load_json(p: str, default):
+# --------------------------
+# Small helpers
+# --------------------------
+def _tr_dir(settings: dict) -> str:
+    paths = (settings or {}).get("paths") or {}
+    tr_dir = paths.get("traceroute")
+    if not tr_dir:
+        raise RuntimeError("settings.paths.traceroute is required")
+    os.makedirs(tr_dir, exist_ok=True)
+    return tr_dir
+
+def _paths(ip: str, settings: dict) -> Tuple[str, str, str]:
+    """Return (stats_path, hops_json_path, trace_json_path)."""
+    base = os.path.join(_tr_dir(settings), ip)
+    return base + "_hops_stats.json", base + "_hops.json", base + "_trace.json"
+
+def normalize_host_label(host) -> str:
+    """Mirror the MTR Host column tokens; keep '???' verbatim."""
+    if host is None:
+        return WAITING
+    h = str(host).strip()
+    if not h or h in {"*", "?"}:
+        return WAITING
+    return h  # includes "???", IPs, DNS names unchanged
+
+def _strip_reserved(d: dict) -> dict:
+    """Remove bookkeeping keys from each hop bucket."""
+    if not isinstance(d, dict):
+        return {}
+    cleaned = {}
+    for hop, data in d.items():
+        if isinstance(data, dict):
+            cleaned[hop] = {k: v for k, v in data.items() if k not in RESERVED_KEYS}
+    return cleaned
+
+def _load_stats(stats_path: str) -> dict:
+    """Load stats from disk and sanitize (defensive in case older files exist)."""
     try:
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(stats_path, encoding="utf-8") as f:
+            raw = json.load(f) or {}
     except Exception:
-        return default
+        return {}
+    return _strip_reserved(raw)
 
-def _save_json(p: str, data) -> None:
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+def _save_stats(stats_path: str, stats: dict) -> None:
+    """Persist only sanitized stats."""
+    os.makedirs(os.path.dirname(stats_path), exist_ok=True)
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(_strip_reserved(stats or {}), f, indent=2)
 
-def _strict_tr_dir(settings: dict) -> str:
-    d = (settings or {}).get("paths", {}).get("traceroute")
-    if not d or not os.path.isdir(d):
-        raise FileNotFoundError("settings['paths']['traceroute'] is missing or does not exist.")
-    return d
-
-def _paths(ip: str, settings: dict) -> Dict[str, str]:
-    d = _strict_tr_dir(settings)
-    stem = os.path.join(d, ip)
+# --------------------------
+# Stats maintenance
+# --------------------------
+def _label_knobs(settings: dict) -> dict:
+    labels = (settings or {}).get("labels") or {}
     return {
-        "txt":        f"{stem}.trace.txt",
-        "json":       f"{stem}.json",
-        "stats":      f"{stem}_hops_stats.json",
-        "hops":       f"{stem}_hops.json",
-        "path_state": f"{stem}_path_state.json",
+        "reset_mode":         str(labels["reset_mode"]).strip().lower(),
+        "unstable_threshold": float(labels["unstable_threshold"]),
+        "topk_to_show":       int(labels["topk_to_show"]),
+        "majority_window":    int(labels["majority_window"]),
+        "sticky_min_wins":    int(labels["sticky_min_wins"]),
     }
 
-def _calendar_dirs(settings: dict):
-    paths = resolve_all_paths(settings or {})
-    log_dir = (settings or {}).get("paths", {}).get("logs") or paths.get("logs") or "logs"
-    events_dir = os.path.join(log_dir, "hop_change_events")
-    intervals_dir = os.path.join(log_dir, "hop_change_intervals")
-    os.makedirs(events_dir, exist_ok=True)
-    os.makedirs(intervals_dir, exist_ok=True)
-    return events_dir, intervals_dir
+def _first_diff_index(prev_hops: List[dict], curr_hops: List[dict]) -> Optional[int]:
+    n = min(len(prev_hops), len(curr_hops))
+    for i in range(n):
+        if (prev_hops[i] or {}).get("host") != (curr_hops[i] or {}).get("host"):
+            return i + 1
+    if len(prev_hops) != len(curr_hops):
+        return n + 1
+    return None
 
-def _load_stats(p_stats: str) -> dict:
-    return _load_json(p_stats, {})
+def _reset_stats_from(stats: dict, start_hop_int: int) -> None:
+    for k in [k for k in stats.keys() if k.isdigit() and int(k) >= start_hop_int]:
+        stats.pop(k, None)
 
-def _save_stats(p_stats: str, stats: dict) -> None:
-    _save_json(p_stats, stats)
-
-def _update_stats_with_snapshot(stats: dict, hops: List[dict]) -> dict:
-    for h in hops:
-        if "count" not in h:
+def _realign_then_reset(stats: dict, curr_hops: List[dict]) -> None:
+    # minimal carry-over: produce an empty skeleton aligned to current hops
+    new_stats = {}
+    for h in curr_hops:
+        try:
+            idx = int(h.get("count", 0))
+        except (TypeError, ValueError):
             continue
-        hop_str = str(int(h["count"]))
-        host = h.get("host")
-        if host is None:
+        if idx < 1: 
             continue
+        new_stats[str(idx)] = {"_order": [], "last": None, "wins": 0}
+    stats.clear()
+    stats.update(new_stats)
 
-        s = stats.setdefault(hop_str, {"_order": [], "last": None, "wins": 0})
-        if host not in s:
-            s[host] = 0
-            s["_order"].insert(0, host)
-        s[host] += 1
-
-        total = sum(v for k, v in s.items() if isinstance(v, int))
-        if total > MAJORITY_WINDOW:
-            for key in list(s["_order"])[::-1]:
-                if isinstance(s.get(key), int) and total > MAJORITY_WINDOW:
-                    s[key] = max(0, s[key] - 1)
-                    total -= 1
-                if total <= MAJORITY_WINDOW:
-                    break
-
-        items = [(k, v) for k, v in s.items()
-                 if isinstance(v, int) and k not in RESERVED_KEYS and k not in IGNORE_HOSTS]
-        items.sort(key=lambda kv: -kv[1])
-        if not items:
-            continue
-        top_host, top_count = items[0]
-        share = top_count / max(1, sum(v for _, v in items))
-
-        last = s.get("last")
-        if last == top_host:
-            s["wins"] = min(STICKY_MIN_WINS, s.get("wins", 0) + 1)
-        else:
-            if s.get("wins", 0) >= STICKY_MIN_WINS or share >= 0.5:
-                s["last"] = top_host
-                s["wins"] = 1
-            else:
-                s["wins"] = max(0, s.get("wins", 0) - 1)
-    return stats
-
-def _write_hops_json(stats: dict, p_hops: str):
-    labels = []
-    path_endpoints = []
-    for hop_str in sorted(stats.keys(), key=lambda x: int(x)):
-        s = stats[hop_str]
-        items = [(k, v) for k, v in s.items()
-                 if isinstance(v, int) and k not in RESERVED_KEYS and k not in IGNORE_HOSTS]
-        items.sort(key=lambda kv: -kv[1])
-        if not items:
-            continue
-
-        top_host, top_count = items[0]
-        total = sum(v for _, v in items)
-        share = top_count / max(1, total)
-
-        if share < UNSTABLE_THRESHOLD and len(items) >= 2:
-            sample = ", ".join(k for k, _ in items[:TOPK_TO_SHOW])
-            label_host = f"varies ({sample})"
-        else:
-            label_host = s.get("last") or top_host
-
-        hop_num = int(hop_str)
-        labels.append({"count": hop_num, "host": label_host})
-        path_endpoints.append(label_host)
-
-    _save_json(p_hops, labels)
-    return labels, path_endpoints
-
-def _emit_change_event(ip: str, hop: int, old: str, new: str, when_epoch: int, events_dir: str) -> None:
-    ev = {"ip": ip, "hop": hop, "old": old, "new": new, "ts": when_epoch,
-          "ts_iso": datetime.fromtimestamp(when_epoch, tz=timezone.utc).isoformat()}
-    with open(os.path.join(events_dir, f"{ip}.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps(ev) + "\n")
-
-def _load_path_state(path_state_file: str) -> dict:
-    return _load_json(path_state_file, {})
-
-def _save_path_state(path_state_file: str, state: dict) -> None:
-    _save_json(path_state_file, state)
-
-def _maybe_emit_interval(ip: str, path_state_file: str, new_path: List[str],
-                         now_epoch: int, intervals_dir: str, logger) -> None:
-    state = _load_path_state(path_state_file)
-    prev_sig = tuple(state.get("active_path", {}).get("labels", []))
-    new_sig = tuple(new_path)
-    if prev_sig == new_sig:
+def _apply_reset_policy(stats: dict, prev_hops: List[dict], curr_hops: List[dict], reset_mode: str) -> None:
+    fd = _first_diff_index(prev_hops, curr_hops)
+    if fd is None:
         return
-    now_iso = datetime.fromtimestamp(now_epoch, tz=timezone.utc).isoformat()
-    if prev_sig:
-        opened = int(state.get("active_path", {}).get("opened_ts", now_epoch))
-        interval = {"ip": ip, "from_ts": opened, "to_ts": now_epoch,
-                    "from_iso": datetime.fromtimestamp(opened, tz=timezone.utc).isoformat(),
-                    "to_iso": now_iso, "labels": list(prev_sig)}
-        with open(os.path.join(intervals_dir, f"{ip}.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps(interval) + "\n")
-    state["active_path"] = {"labels": list(new_sig), "opened_ts": now_epoch}
-    _save_path_state(path_state_file, state)
-    if logger:
-        logger.info(f"[{ip}] Hop path changed → interval closed; new path active since {now_iso}")
+    if reset_mode == "none":
+        return
+    if reset_mode == "all":
+        stats.clear()
+        return
+    if reset_mode == "realign_then_reset":
+        _realign_then_reset(stats, curr_hops)
+        return
+    _reset_stats_from(stats, fd)
 
-def update_hop_labels_only(ip: str, hops: List[dict], settings: dict, logger) -> None:
-    p = _paths(ip, settings)
-    stats = _load_stats(p["stats"])
-    stats = _update_stats_with_snapshot(stats, hops)
-    _save_stats(p["stats"], stats)
-
-    labels_json, path_list = _write_hops_json(stats, p["hops"])
-
-    prev_labels = _load_json(p["hops"], [])
-    prev_map = {int(x["count"]): x["host"] for x in prev_labels if isinstance(x, dict) and "count" in x and "host" in x}
-    curr_map = {int(x["count"]): x["host"] for x in labels_json if isinstance(x, dict) and "count" in x and "host" in x}
-
-    events_dir, intervals_dir = _calendar_dirs(settings)
-    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
-    for hop_num, new_label in curr_map.items():
-        old_label = prev_map.get(hop_num)
-        if old_label and old_label != new_label:
-            _emit_change_event(ip, hop_num, old_label, new_label, now_epoch, events_dir)
-    _maybe_emit_interval(ip, p["path_state"], path_list, now_epoch, intervals_dir, logger)
-
-def save_trace_and_json(ip: str, hops: List[dict], settings: dict, logger) -> None:
-    """Writer kept, but respects STRICT path."""
-    p = _paths(ip, settings)
-
-    with open(p["txt"], "w", encoding="utf-8") as f:
-        for h in hops:
-            try:
-                hop_num = int(h.get("count", 0))
-            except (TypeError, ValueError):
-                continue
-            if hop_num < 1:
-                continue
-            ip_addr = h.get("host", "?")
-            latency = h.get("Avg", "U")
-            f.write(f"{hop_num} {ip_addr} {latency} ms\n")
-
-    hop_map = {}
+def _update_stats_with_snapshot(stats: dict, hops: List[dict],
+                                majority_window: int, sticky_min_wins: int) -> dict:
     for h in hops:
         try:
             hop_num = int(h.get("count", 0))
@@ -210,56 +146,149 @@ def save_trace_and_json(ip: str, hops: List[dict], settings: dict, logger) -> No
             continue
         if hop_num < 1:
             continue
-        hop_map[f"hop{hop_num}"] = h.get("host", f"hop{hop_num}")
-    _save_json(p["json"], hop_map)
 
-    update_hop_labels_only(ip, hops, settings, logger)
+        hop_idx = str(hop_num)
+        host = normalize_host_label(h.get("host"))
+        s = stats.setdefault(hop_idx, {"_order": [], "last": None, "wins": 0})
 
-def get_labels(ip: str, traceroute_dir: Optional[str] = None,
-               settings: Optional[dict] = None, logger=None) -> List[Tuple[int, str]]:
-    if traceroute_dir and os.path.isdir(traceroute_dir):
-        d = traceroute_dir
-    else:
-        d = _strict_tr_dir(settings or {})
-    stem = os.path.join(d, ip)
+        if host not in s:
+            s[host] = 0
+            s["_order"].insert(0, host)
+        s[host] += 1
 
-    p_hops = f"{stem}_hops.json"
-    if os.path.exists(p_hops):
-        try:
-            data = _load_json(p_hops, [])
-            out = []
-            for item in data:
-                if not isinstance(item, dict) or "count" not in item or "host" not in item:
-                    continue
-                hop = int(item["count"])
-                host = str(item["host"])
-                out.append((hop, f"{hop}: {host}"))
-            out.sort(key=lambda t: t[0])
-            return out
-        except Exception:
-            pass
+        total_counts = sum(v for k, v in s.items() if isinstance(s.get(k), int))
+        if total_counts > majority_window:
+            for key in list(s["_order"])[::-1]:
+                if isinstance(s.get(key), int) and s[key] > 0:
+                    s[key] -= 1
+                    if s[key] == 0:
+                        del s[key]
+                        s["_order"] = [x for x in s["_order"] if x != key]
+                    break
 
-    p_txt = f"{stem}.trace.txt"
-    if os.path.exists(p_txt):
-        out = []
-        with open(p_txt, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 2 and parts[0].isdigit():
-                    hop = int(parts[0]); host = parts[1]
-                    out.append((hop, f"{hop}: {host}"))
-        out.sort(key=lambda t: t[0])
-        return out
-    return []
+        # sticky modal excluding RESERVED_KEYS
+        modal = max(
+            (k for k in s if isinstance(s.get(k), int) and k not in RESERVED_KEYS),
+            key=lambda k: s[k],
+            default=None
+        )
+        cur = s.get("last")
+        if cur is None:
+            s["last"] = modal
+            s["wins"] = 1
+        elif modal == cur:
+            s["wins"] = min(s.get("wins", 0) + 1, sticky_min_wins)
+        else:
+            s["wins"] = s.get("wins", 0) - 1
+            if s["wins"] <= 0:
+                s["last"] = modal
+                s["wins"] = 1
 
-def get_available_hops(ip: str, traceroute_dir: Optional[str] = None,
-                       settings: Optional[dict] = None,
-                       graph_dir: Optional[str] = None, **kwargs) -> List[int]:
-    if traceroute_dir and os.path.isdir(traceroute_dir):
-        d = traceroute_dir
-    else:
-        d = _strict_tr_dir(settings or {})
-    p_hops = os.path.join(d, f"{ip}_hops.json")
-    data = _load_json(p_hops, [])
-    hops = {int(item["count"]) for item in data if isinstance(item, dict) and "count" in item}
-    return sorted(hops)
+    return stats
+
+# --------------------------
+# Label building & persistence
+# --------------------------
+def _decide_labels_and_write(stats: dict, hops_json_path: str,
+                             unstable_threshold: float, topk_to_show: int) -> Dict[int, str]:
+    """
+    Build per-hop labels and persist <ip>_hops.json.
+    Returns {hop_index: "N: label"} for convenience.
+    """
+    labels: Dict[int, str] = {}
+    out: List[dict] = []
+
+    for hop_str, s in sorted(stats.items(), key=lambda x: int(x[0])):
+        hop_int = int(hop_str)
+        if hop_int < 1:
+            continue
+
+        items = [(k, s[k]) for k in s
+                 if isinstance(s.get(k), int) and k not in RESERVED_KEYS]
+        total = sum(c for _, c in items)
+        if total == 0:
+            continue
+
+        items.sort(key=lambda kv: -kv[1])
+        top_host, top_count = items[0]
+        share = top_count / total
+
+        if share < unstable_threshold and len(items) >= 2:
+            sample_hosts = []
+            for token, _cnt in items[:topk_to_show]:
+                if token not in RESERVED_KEYS and token not in sample_hosts:
+                    sample_hosts.append(token)  # keep ??? as-is
+            host_label = f"varies ({', '.join(sample_hosts)})" if sample_hosts else "varies"
+        else:
+            last_host = (s.get("last") if s.get("last") not in RESERVED_KEYS else None)
+            host_label = last_host or top_host
+
+        labels[hop_int] = f"{hop_int}: {host_label}"
+        out.append({"count": hop_int, "host": host_label})
+
+    if out:
+        with open(hops_json_path, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
+
+    return labels
+
+# --------------------------
+# Public API
+# --------------------------
+def update_labels_and_traces(
+    ip: str,
+    hops: List[dict],
+    settings: dict,
+    write_trace_json: bool = False,
+    prev_hops: Optional[List[dict]] = None,
+    logger=None
+) -> Dict[int, str]:
+    """
+    Single entrypoint called by monitor.py:
+    - Applies reset policy if prev_hops differs from current.
+    - Updates per-hop stats using current snapshot.
+    - Saves sanitized stats JSON and hop labels JSON.
+    - Optionally writes a full trace JSON (for your front-end), if requested.
+    Returns labels dict for convenience.
+    """
+    stats_path, hops_json_path, trace_json_path = _paths(ip, settings)
+    knobs = _label_knobs(settings)
+
+    # 1) Load existing stats (sanitized)
+    stats = _load_stats(stats_path)
+
+    # 2) Optional reset based on path change
+    if prev_hops is not None:
+        _apply_reset_policy(stats, prev_hops, hops, knobs["reset_mode"])
+
+    # 3) Update stats with this snapshot
+    stats = _update_stats_with_snapshot(
+        stats, hops,
+        majority_window=knobs["majority_window"],
+        sticky_min_wins=knobs["sticky_min_wins"]
+    )
+
+    # 4) Save sanitized stats to disk
+    _save_stats(stats_path, stats)
+
+    # 5) Build labels from sanitized on-disk shape & write <ip>_hops.json
+    clean_stats = _load_stats(stats_path)  # belt-and-braces
+    labels = _decide_labels_and_write(
+        clean_stats,
+        hops_json_path,
+        unstable_threshold=knobs["unstable_threshold"],
+        topk_to_show=knobs["topk_to_show"]
+    )
+
+    # 6) Optional: write full trace JSON for front-end (kept simple here)
+    if write_trace_json:
+        trace_doc = {
+            "ip": ip,
+            "hops": hops,  # raw snapshot as received (Host tokens already normalized upstream)
+        }
+        with open(trace_json_path, "w", encoding="utf-8") as f:
+            json.dump(trace_doc, f, indent=2)
+
+    if logger:
+        logger.debug(f"[{ip}] graph_utils: stats+labels updated (write_trace_json={write_trace_json})")
+    return labels
