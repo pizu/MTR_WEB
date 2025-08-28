@@ -301,15 +301,15 @@ def main(argv: Optional[List[str]] = None) -> int:
           print(f"[FATAL] Cannot import modules.monitor: {e}", file=sys.stderr)
           return 1
           
-          try:
-             monitor_target(args.target, settings=settings)  # clean signature
-             return 0
-          except KeyboardInterrupt:
-             return 0
-          except Exception as e:
-             import traceback
-             print("[FATAL] monitor_target crashed:\n" + traceback.format_exc(), file=sys.stderr)
-             return 1
+       try:
+          monitor_target(args.target, settings=settings)  # clean signature
+          return 0
+       except KeyboardInterrupt:
+          return 0
+       except Exception as e:
+          import traceback
+          print("[FATAL] monitor_target crashed:\n" + traceback.format_exc(), file=sys.stderr)
+          return 1
 
     # Aggregate mode: spawn workers unless --no-spawn
     if not args.no_spawn:
