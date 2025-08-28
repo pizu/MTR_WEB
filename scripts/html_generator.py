@@ -75,6 +75,7 @@ def main() -> int:
         return 1
 
     paths = resolve_all_paths(settings)
+    TRACE_DIR = paths["traceroute"]
     logger = setup_logger("html_generator", settings=settings)
 
     HTML_DIR = resolve_html_dir(settings)
@@ -100,7 +101,7 @@ def main() -> int:
 
         # Prefer traceroute-based labels; get_available_hops handles fallbacks.
         paths = resolve_all_paths(settings)
-        hops = read_available_hops(ip, traceroute_dir=cfg.TRACE_DIR)
+        hops = read_available_hops(ip, traceroute_dir=TRACE_DIR)
 
         try:
             generate_target_html(ip, description, hops, settings, logger)
