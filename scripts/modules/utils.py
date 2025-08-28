@@ -2,49 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 modules/utils.py
-================
-
 Shared utilities for the MTR_WEB project.
 
-Key responsibilities
---------------------
-- Load and normalize YAML settings.
-- Resolve all key directories with a STRICT policy for the traceroute path
-  (YAML only; no environment or legacy fallbacks; do not auto-create).
-- Provide logging helpers (rotating file + console), with a live-level refresher.
-- Lightweight helpers for HTML ranges and general config ergonomics.
-
-Notes
------
-This file intentionally avoids any heavy dependencies beyond the Python stdlib
-and PyYAML. It is safe to import from any script in the project.
-
-Conventions
------------
-- All "paths" are absolute (resolved relative to settings file if user provides
-  relative paths).
-- `settings['_meta']['settings_dir']` is injected by load_settings() so other
-  helpers can resolve relative paths consistently.
-
+- Load/normalize YAML settings (injects _meta.settings_dir)
+- Resolve core paths (strict on paths.traceroute)
+- Targets path resolver (supports top-level 'targets:' file-path)
+- Logging setup + dynamic level refresh
+- HTML ranges helper (get_html_ranges)
+- Small state writer (write_target_state)
 """
 
 from __future__ import annotations
 
 import os
-import sys
 import json
-import time
 import yaml
-import errno
-import atexit
-import socket
-import shutil
-import signal
 import logging
-import pathlib
-import textwrap
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 # -----------------------------------------------------------------------------
@@ -52,7 +27,6 @@ from typing import Any, Dict, List, Optional, Tuple
 # -----------------------------------------------------------------------------
 
 def _abspath_relative_to(base_dir: str, maybe_path: Optional[str]) -> Optional[str]:
-    """Return absolute path given a base directory."""
     if not maybe_path:
         return None
     p = str(maybe_path).strip()
@@ -64,13 +38,6 @@ def _abspath_relative_to(base_dir: str, maybe_path: Optional[str]) -> Optional[s
 
 
 def load_settings(path: str) -> Dict[str, Any]:
-    """
-    Load YAML settings and inject a `_meta` section with:
-      - settings_file (abs path)
-      - settings_dir  (dir of the file)
-
-    Also normalizes common path fields to absolute paths.
-    """
     path = os.path.abspath(path)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Settings file not found: {path}")
@@ -78,26 +45,22 @@ def load_settings(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    # Inject meta for downstream helpers
     settings_dir = os.path.dirname(path)
     data.setdefault("_meta", {})
     data["_meta"]["settings_file"] = path
     data["_meta"]["settings_dir"] = settings_dir
 
-    # Normalize path groups if present
-    # - paths: { data_dir, html_dir, html_data_dir, logs_dir, traceroute, ... }
     if isinstance(data.get("paths"), dict):
         for k, v in list(data["paths"].items()):
             if isinstance(v, str):
                 data["paths"][k] = _abspath_relative_to(settings_dir, v)
 
-    # Legacy: files: { targets: ... }
     if isinstance(data.get("files"), dict):
         for k, v in list(data["files"].items()):
             if isinstance(v, str):
                 data["files"][k] = _abspath_relative_to(settings_dir, v)
 
-    # Allow top-level single paths (rare but used in some setups)
+    # Allow top-level 'targets' as a file path string
     if isinstance(data.get("targets"), str):
         data["targets"] = _abspath_relative_to(settings_dir, data["targets"])
 
@@ -105,17 +68,8 @@ def load_settings(path: str) -> Dict[str, Any]:
 
 
 def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Return a dictionary of important absolute paths derived from settings.
-
-    Expected keys:
-      - data_dir, html_dir, html_data_dir, logs_dir, traceroute, etc.
-
-    This function DOES NOT create directories automatically. Writers should
-    create as needed.
-    """
     paths = settings.get("paths", {}) or {}
-    out = {}
+    out: Dict[str, str] = {}
 
     def must(key: str) -> Optional[str]:
         p = paths.get(key)
@@ -128,21 +82,16 @@ def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, str]:
     out["html_data_dir"] = must("html_data_dir") or os.path.join(out["html_dir"], "data")
     out["logs_dir"] = must("logs_dir") or os.path.abspath("logs")
 
-    # STRICT policy for traceroute path: *must* be set in YAML.
     tr = must("traceroute")
     if not tr:
         raise RuntimeError(
             "paths.traceroute is not configured in your YAML. "
-            "Refusing to guess. Please set paths.traceroute explicitly."
+            "Please set paths.traceroute explicitly."
         )
     out["traceroute"] = tr
 
-    # Optional: pipeline logs directory (controller, per-script logs, etc.)
     out["pipeline_logs_dir"] = must("pipeline_logs_dir") or os.path.join(out["logs_dir"], "")
-
-    # Optional: lock dir for single-writer patterns
     out["locks_dir"] = must("locks_dir") or os.path.join(out["data_dir"], ".locks")
-
     return out
 
 
@@ -152,20 +101,13 @@ def resolve_all_paths(settings: Dict[str, Any]) -> Dict[str, str]:
 
 def resolve_targets_path(settings: Optional[Dict[str, Any]] = None) -> str:
     """
-    Return the absolute path to the targets YAML file.
-
-    Order of resolution:
-      1) settings['files']['targets'] (relative to the settings file if not absolute)
-      2) settings['targets'] if it is a **string file path** (relative to the settings file if not absolute)
-      3) 'mtr_targets.yaml' next to the settings file (if settings given)
-      4) 'mtr_targets.yaml' in the current working directory
-
-    Accepts both call styles:
-      resolve_targets_path()                # ok
-      resolve_targets_path(settings_dict)   # ok
+    Order:
+      1) settings['files']['targets']
+      2) settings['targets'] if it's a file path string
+      3) mtr_targets.yaml next to the settings file
+      4) mtr_targets.yaml in CWD
     """
     if isinstance(settings, dict):
-        # Legacy/structured location
         files = settings.get("files", {}) or {}
         p = files.get("targets")
         if p:
@@ -174,7 +116,6 @@ def resolve_targets_path(settings: Optional[Dict[str, Any]] = None) -> str:
                 p = os.path.join(base, p)
             return os.path.abspath(p)
 
-        # NEW: allow top-level 'targets' to be a file path string
         top = settings.get("targets")
         if isinstance(top, str) and top.strip():
             p = top.strip()
@@ -183,13 +124,11 @@ def resolve_targets_path(settings: Optional[Dict[str, Any]] = None) -> str:
                 p = os.path.join(base, p)
             return os.path.abspath(p)
 
-        # Conventional default next to settings
         base = settings.get("_meta", {}).get("settings_dir") or os.getcwd()
         cand = os.path.join(base, "mtr_targets.yaml")
         if os.path.isfile(cand):
             return os.path.abspath(cand)
 
-    # Fallback if settings is None or above didn’t resolve
     return os.path.abspath("mtr_targets.yaml")
 
 
@@ -216,34 +155,8 @@ def setup_logger(
     backup_count: int = 3,
     auto_refresh: bool = True,
 ) -> logging.Logger:
-    """
-    Create or reuse a configured logger.
-
-    Parameters
-    ----------
-    name : str
-        Logger name; also used to lookup per-logger level in YAML under
-        `logging_levels.<name>` (falls back to `logging_levels.default`).
-    settings : dict
-        Settings dict loaded via load_settings(), or None.
-    level_override : str
-        Force a level (e.g., "DEBUG") ignoring YAML.
-    to_console : bool
-        Attach a stream handler to stderr.
-    to_file : bool
-        Attach a RotatingFileHandler under `paths.logs_dir`.
-    logfile_path : str
-        Full path to a logfile; overrides the default derived from logs_dir/name.
-    max_bytes : int
-        RotatingFileHandler maxBytes.
-    backup_count : int
-        RotatingFileHandler backupCount.
-    auto_refresh : bool
-        If True, call refresh_logger_levels(settings, [name,'modules','paths']) after setup.
-    """
     logger = logging.getLogger(name)
 
-    # Base level from YAML (or override)
     default_level = logging.INFO
     if settings:
         levels = settings.get("logging_levels", {}) or {}
@@ -255,7 +168,6 @@ def setup_logger(
 
     logger.setLevel(default_level)
 
-    # Idempotent handler attachment
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     if to_console and not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
         sh = logging.StreamHandler()
@@ -263,7 +175,6 @@ def setup_logger(
         sh.setLevel(default_level)
         logger.addHandler(sh)
 
-    # File logging
     if to_file:
         if not logfile_path:
             logs_dir = (settings.get("paths", {}) or {}).get("logs_dir") if settings else None
@@ -289,12 +200,6 @@ def setup_logger(
 
 
 def refresh_logger_levels(settings: Dict[str, Any], keys: Optional[List[str]] = None) -> None:
-    """
-    Refresh levels for all registered loggers according to `logging_levels`.
-
-    Useful when your controller dynamically re-reads YAML and wants to push
-    level changes to already-instantiated loggers.
-    """
     levels = settings.get("logging_levels", {}) or {}
 
     def get_level(name: str) -> int:
@@ -308,12 +213,74 @@ def refresh_logger_levels(settings: Dict[str, Any], keys: Optional[List[str]] = 
             lg.setLevel(level)
         except Exception:
             continue
-
         for h in lg.handlers:
             try:
                 h.setLevel(level)
             except Exception:
                 pass
-
         if lg.isEnabledFor(logging.DEBUG):
             lg.debug(f"Logger '{name}' level refreshed to {logging.getLevelName(level)}")
+
+
+# -----------------------------------------------------------------------------
+# HTML ranges helper (used by graph_config / graph_generator)
+# -----------------------------------------------------------------------------
+
+def get_html_ranges(settings: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Return the list of time ranges the HTML/graphs should render.
+
+    Structure in YAML (under a single place, usually `graph.ranges`):
+      graph:
+        ranges:
+          - { label: "15m", seconds: 900 }
+          - { label: "1h",  seconds: 3600 }
+          - { label: "6h",  seconds: 21600 }
+          - { label: "12h", seconds: 43200 }
+          - { label: "24h", seconds: 86400 }
+          - { label: "1w",  seconds: 604800 }
+
+    If absent, we fall back to a sensible default.
+    """
+    graph_cfg = settings.get("graph", {}) or {}
+    ranges = graph_cfg.get("ranges")
+    out: List[Dict[str, Any]] = []
+
+    if isinstance(ranges, list) and ranges:
+        for r in ranges:
+            if not isinstance(r, dict):
+                continue
+            label = str(r.get("label") or "").strip()
+            secs = r.get("seconds")
+            try:
+                secs = int(secs)
+            except Exception:
+                secs = None
+            if label and secs and secs > 0:
+                out.append({"label": label, "seconds": secs})
+
+    if not out:
+        out = [
+            {"label": "15m", "seconds": 900},
+            {"label": "1h",  "seconds": 3600},
+            {"label": "6h",  "seconds": 21600},
+            {"label": "12h", "seconds": 43200},
+            {"label": "24h", "seconds": 86400},
+            {"label": "1w",  "seconds": 604800},
+        ]
+    return out
+
+
+# -----------------------------------------------------------------------------
+# State file for UI (optional helper)
+# -----------------------------------------------------------------------------
+
+def write_target_state(state_dir: str, ip: str, status: str, reason: str = "") -> None:
+    """
+    Write a small json file the HTML can read to show current state.
+    status: "running" | "paused" | "disabled" | "not_in_targets" | "error"
+    """
+    os.makedirs(state_dir, exist_ok=True)
+    path = os.path.join(state_dir, f"{ip}_state.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"ip": ip, "status": status, "reason": reason, "ts": int(__import__("time").time())}, f)
