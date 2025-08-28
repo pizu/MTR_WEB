@@ -55,6 +55,7 @@ import signal
 import argparse
 import importlib
 import multiprocessing as mp
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))  # make 'modules' importable
 from typing import Dict, Any, List, Optional, Callable
 
 # -----------------------------------------------------------------------------
