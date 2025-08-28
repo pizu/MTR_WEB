@@ -334,4 +334,4 @@ def main(argv: Optional[List[str]] = None) -> int:
                 p = mp.Process(target=_worker_wrapper, args=(ip, settings, entry_path), daemon=True)
                 p.start()
                 procs.append(p)
-                logger.info(f"[{ip}] Worker
+                logger.info(f"[{ip}] Worker started (PID={p.pid})")
