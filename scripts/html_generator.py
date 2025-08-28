@@ -15,6 +15,7 @@ import os
 import sys
 import argparse
 import yaml
+import json
 from modules.utils import load_settings, setup_logger, resolve_all_paths, resolve_targets_path, get_path  # add resolve_all_paths, get_path
 
 # Ensure imports work under systemd
@@ -26,11 +27,31 @@ for p in (MODULES_DIR, SCRIPTS_DIR, REPO_ROOT):
         sys.path.insert(0, p)
 
 from modules.utils import load_settings, setup_logger, resolve_html_dir, resolve_targets_path  # noqa: E402
-from modules.graph_utils import get_available_hops  # noqa: E402
 from modules.html_builder.target_html import generate_target_html  # noqa: E402
 from modules.html_cleanup import remove_orphan_html_files  # noqa: E402
 
+def read_available_hops(ip: str, traceroute_dir: str) -> dict[int, str]:
+    """
+    Read-only: returns {hop_index: "N: label"} for the given IP by reading
+    <traceroute>/<ip>_hops.json (written by graph_utils.update_labels_and_traces).
 
+    This keeps html_generator.py fully decoupled from graph_utils internals.
+    """
+    path = os.path.join(traceroute_dir, f"{ip}_hops.json")
+    labels: dict[int, str] = {}
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                arr = json.load(f) or []
+            for rec in arr:
+                n = int(rec.get("count", 0))
+                if n >= 1:
+                    labels[n] = f"{n}: {rec.get('host')}"
+    except Exception:
+        # Non-fatal: return {}; caller can still render the page without legends.
+        return {}
+    return labels
+    
 def resolve_settings_path(default_name: str = "mtr_script_settings.yaml") -> str:
     """--settings <path> → positional → ../mtr_script_settings.yaml"""
     parser = argparse.ArgumentParser(add_help=False)
@@ -79,11 +100,8 @@ def main() -> int:
 
         # Prefer traceroute-based labels; get_available_hops handles fallbacks.
         paths = resolve_all_paths(settings)
-        hops = get_available_hops(
-            ip,
-            graph_dir=os.path.join(HTML_DIR, "graphs"),
-            traceroute_dir=paths["traceroute"],
-        )
+        hops = read_available_hops(ip, traceroute_dir=cfg.TRACE_DIR)
+
         try:
             generate_target_html(ip, description, hops, settings, logger)
         except Exception:
