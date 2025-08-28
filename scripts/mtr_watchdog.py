@@ -295,25 +295,21 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Per-target mode: controller runs many instances with --target
     if args.target:
-        entrypoint = _import_monitor(logger, args.entry)
-        if not entrypoint:
-            if writer_lock:
-                try:
-                    writer_lock.release()
-                except Exception:
-                    pass
-            return 3
-        entry_path = f"{entrypoint.__module__}:{entrypoint.__name__}"
-
-        # Run worker in-foreground (no extra process), so controller gets the exit code
-        _worker_wrapper(args.target, settings, entry_path)
-
-        if writer_lock:
-            try:
-                writer_lock.release()
-            except Exception:
-                pass
-        return 0
+       try:
+          from modules.monitor import monitor_target  # this is the canonical entrypoint
+       except Exception as e:
+          print(f"[FATAL] Cannot import modules.monitor: {e}", file=sys.stderr)
+          return 1
+          
+          try:
+             monitor_target(args.target, settings=settings)  # clean signature
+             return 0
+          except KeyboardInterrupt:
+             return 0
+          except Exception as e:
+             import traceback
+             print("[FATAL] monitor_target crashed:\n" + traceback.format_exc(), file=sys.stderr)
+             return 1
 
     # Aggregate mode: spawn workers unless --no-spawn
     if not args.no_spawn:
