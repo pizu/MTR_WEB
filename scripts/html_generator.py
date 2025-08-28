@@ -16,19 +16,18 @@ import sys
 import argparse
 import yaml
 import json
-from modules.utils import load_settings, setup_logger, resolve_all_paths, resolve_targets_path, get_path  # add resolve_all_paths, get_path
 
-# Ensure imports work under systemd
-SCRIPTS_DIR = os.path.abspath(os.path.dirname(__file__))
-REPO_ROOT   = os.path.abspath(os.path.join(SCRIPTS_DIR, os.pardir))
-MODULES_DIR = os.path.join(SCRIPTS_DIR, "modules")
-for p in (MODULES_DIR, SCRIPTS_DIR, REPO_ROOT):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+from modules.utils import (
+    load_settings,
+    setup_logger,
+    resolve_all_paths,
+    resolve_html_dir,
+    resolve_targets_path,
+)
 
-from modules.utils import load_settings, setup_logger, resolve_html_dir, resolve_targets_path  # noqa: E402
-from modules.html_builder.target_html import generate_target_html  # noqa: E402
-from modules.html_cleanup import remove_orphan_html_files  # noqa: E402
+from modules.html_builder.target_html import generate_target_html
+from modules.html_cleanup import remove_orphan_html_files
+
 
 def read_available_hops(ip: str, traceroute_dir: str) -> dict[int, str]:
     """
@@ -51,7 +50,8 @@ def read_available_hops(ip: str, traceroute_dir: str) -> dict[int, str]:
         # Non-fatal: return {}; caller can still render the page without legends.
         return {}
     return labels
-    
+
+
 def resolve_settings_path(default_name: str = "mtr_script_settings.yaml") -> str:
     """--settings <path> → positional → ../mtr_script_settings.yaml"""
     parser = argparse.ArgumentParser(add_help=False)
@@ -62,6 +62,7 @@ def resolve_settings_path(default_name: str = "mtr_script_settings.yaml") -> str
     for tok in sys.argv[1:]:
         if not tok.startswith("-"):
             return os.path.abspath(tok)
+    REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     return os.path.abspath(os.path.join(REPO_ROOT, default_name))
 
 
@@ -76,9 +77,8 @@ def main() -> int:
 
     paths = resolve_all_paths(settings)
     TRACE_DIR = paths["traceroute"]
-    logger = setup_logger("html_generator", settings=settings)
-
     HTML_DIR = resolve_html_dir(settings)
+    logger = setup_logger("html_generator", settings=settings)
 
     # 2) Load targets
     targets_file = resolve_targets_path()
@@ -99,8 +99,6 @@ def main() -> int:
         target_ips.append(ip)
         description = t.get("description", "")
 
-        # Prefer traceroute-based labels; get_available_hops handles fallbacks.
-        paths = resolve_all_paths(settings)
         hops = read_available_hops(ip, traceroute_dir=TRACE_DIR)
 
         try:
