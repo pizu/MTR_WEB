@@ -52,11 +52,15 @@ def write_index_html(
     targets_path: str,
     logger
 ) -> None:
+    """
+    Writes <html_dir>/index.html with embedded Settings drawer.
+    Uses token replacement (no str.format) to avoid brace conflicts in CSS/JS.
+    """
     os.makedirs(html_dir, exist_ok=True)
     index_path = os.path.join(html_dir, "index.html")
     logger.info(f"[index] Writing {index_path} …")
 
-    # Sidebar chips (from YAML ranges)
+    # Build sidebar chips from YAML ranges
     chips_html = "\n        ".join(
         "<div class='chip' data-range='{lbl}'>{lbl}</div>".format(lbl=html_escape(lbl))
         for lbl in (range_labels or [])
@@ -67,7 +71,7 @@ def write_index_html(
     targets_text  = html_escape(_read_text_safely(targets_path))
     logger.debug(f"[index] Prefilled settings drawer from {settings_path} and {targets_path}")
 
-    # Cards HTML
+    # Cards markup
     cards_html_parts = []
     for c in (cards or []):
         ip   = html_escape(c["ip"])
@@ -89,113 +93,109 @@ def write_index_html(
             "          <a class='btn' href='{ip}.html'>View Details</a>\n"
             "          <a class='btn' href='logs/{ip}.log'>Logs</a>\n"
             "        </div>\n"
-            "      </div>\n".format(
-                ip=ip, status=status_class, label=status_label, desc=desc, last=last_seen, hops=hops
-            )
-        )
+            "      </div>\n"
+        .format(ip=ip, status=status_class, label=status_label, desc=desc, last=last_seen, hops=hops))
     cards_html = "".join(cards_html_parts)
 
-    # Meta refresh (optional)
-    meta_refresh = ""
-    if auto_refresh_seconds > 0:
-        meta_refresh = "<meta http-equiv='refresh' content='{s}'>".format(s=int(auto_refresh_seconds))
+    meta_refresh = "" if not auto_refresh_seconds else \
+        "<meta http-equiv='refresh' content='{s}'>".format(s=int(auto_refresh_seconds))
 
-    # Full page (note doubled braces for literal CSS/JS braces)
-    page = """<!doctype html>
+    # Token-based template (no .format on this big string!)
+    page_template = """<!doctype html>
 <html lang='en'>
 <head>
 <meta charset='utf-8'>
-{meta_refresh}
+__META_REFRESH__
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MTR • Dashboard</title>
 <style>
   /* --------- Theming --------- */
-  :root {{
+  :root {
     --bg:#0e1118; --panel:#141a26; --panel-2:#0f1623; --text:#eaf1ff; --muted:#aab8d0;
     --ok:#17b276; --warn:#d8a023; --down:#d04b52; --unknown:#8a92a6;
     --outline:#2a3852; --chip:#182238; --radius:14px; --overlay:rgba(0,0,0,.45);
     --link:#8ab4f8; --btn-text:#eaf1ff;
     --textarea-bg:#0b1320; --textarea-border:#324463;
-  }}
-  :root[data-theme="light"] {{
+  }
+  :root[data-theme="light"] {
     --bg:#f6f8fc; --panel:#ffffff; --panel-2:#f1f4f9; --text:#111827; --muted:#4b5563;
     --ok:#158f60; --warn:#9b750f; --down:#b1353c; --unknown:#6b7280;
     --outline:#d5d8e1; --chip:#eef2f7; --overlay:rgba(0,0,0,.20);
     --link:#1d4ed8; --btn-text:#111827;
     --textarea-bg:#ffffff; --textarea-border:#d5d8e1;
-  }}
+  }
 
-  *{{box-sizing:border-box}}
-  body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,Arial,sans-serif}}
-  a{{color:var(--link);text-decoration:none}}
-  .layout{{display:grid;grid-template-columns:280px 1fr;min-height:100vh}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  a{color:var(--link);text-decoration:none}
+  .layout{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
 
   /* --------- Sidebar --------- */
-  .sidebar{{
+  .sidebar{
     background:linear-gradient(180deg,var(--panel),var(--panel-2));
     border-right:1px solid var(--outline);padding:16px;position:sticky;top:0;height:100vh;overflow:auto;
-  }}
-  .brand{{font-weight:700;font-size:18px;margin-bottom:10px}}
-  .subtitle{{color:var(--muted);font-size:12px;margin-bottom:16px}}
-  .section{{margin:14px 0;padding:12px;border:1px solid var(--outline);border-radius:var(--radius);background:var(--panel)}}
-  .section h4{{margin:0 0 8px 0;font-size:12px;letter-spacing:.06em;color:var(--muted);text-transform:uppercase}}
-  .search{{display:flex;gap:8px}}
-  .search input{{
+  }
+  .brand{font-weight:700;font-size:18px;margin-bottom:10px}
+  .subtitle{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .section{margin:14px 0;padding:12px;border:1px solid var(--outline);border-radius:var(--radius);background:var(--panel)}
+  .section h4{margin:0 0 8px 0;font-size:12px;letter-spacing:.06em;color:var(--muted);text-transform:uppercase}
+  .search{display:flex;gap:8px}
+  .search input{
     width:100%;padding:10px;border-radius:10px;border:1px solid var(--outline);
     background:var(--panel-2);color:var(--text)
-  }}
-  .chips{{display:flex;flex-wrap:wrap;gap:8px}}
-  .chip{{
+  }
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{
     padding:6px 10px;border-radius:999px;background:var(--chip);border:1px solid var(--outline);
     font-size:12px;cursor:pointer;user-select:none
-  }}
-  .chip.ok{{border-color:var(--ok);color:var(--ok)}}
-  .chip.warn{{border-color:var(--warn);color:var(--warn)}}
-  .chip.down{{border-color:var(--down);color:var(--down)}}
-  .chip.unknown{{border-color:var(--unknown);color:var(--unknown)}}
-  .nav a{{display:block;padding:10px;border-radius:10px;color:var(--text);opacity:.9}}
-  .nav a:hover{{background:var(--panel-2)}}
+  }
+  .chip.ok{border-color:var(--ok);color:var(--ok)}
+  .chip.warn{border-color:var(--warn);color:var(--warn)}
+  .chip.down{border-color:var(--down);color:var(--down)}
+  .chip.unknown{border-color:var(--unknown);color:var(--unknown)}
+  .nav a{display:block;padding:10px;border-radius:10px;color:var(--text);opacity:.9}
+  .nav a:hover{background:var(--panel-2)}
 
   /* --------- Content / Cards --------- */
-  .content{{padding:20px}}
-  .header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;flex-wrap:wrap}}
-  .header h1{{font-size:18px;margin:0}}
-  .header .right{{display:flex;align-items:center;gap:8px}}
-  .btn, .theme-toggle{{border:1px solid var(--outline);background:var(--panel-2);padding:6px 10px;border-radius:10px;cursor:pointer;color:var(--btn-text)}}
-  .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}}
-  .card{{border:1px solid var(--outline);border-radius:var(--radius);background:var(--panel);padding:14px}}
-  .card-top{{display:flex;justify-content:space-between;gap:10px;align-items:center}}
-  .ip{{font-weight:700}}
-  .status{{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid var(--outline)}}
-  .status.ok{{border-color:var(--ok);color:var(--ok)}}
-  .status.warn{{border-color:var(--warn);color:var(--warn)}}
-  .status.down{{border-color:var(--down);color:var(--down)}}
-  .status.unknown{{border-color:var(--unknown);color:var(--unknown)}}
-  .desc{{color:var(--muted);margin:6px 0 10px 0}}
-  .meta{{color:var(--muted);font-size:12px;margin-bottom:10px}}
-  .actions{{display:flex;gap:8px;flex-wrap:wrap}}
-  .actions .btn:hover{{filter:brightness(1.05)}}
-  .spark{{height:34px;border-radius:8px;background:var(--panel-2);border:1px dashed var(--outline);
-    display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;margin-bottom:10px}}
-  .footer{{color:var(--muted);font-size:12px;margin-top:12px}}
+  .content{padding:20px}
+  .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;flex-wrap:wrap}
+  .header h1{font-size:18px;margin:0}
+  .header .right{display:flex;align-items:center;gap:8px}
+  .btn, .theme-toggle{border:1px solid var(--outline);background:var(--panel-2);padding:6px 10px;border-radius:10px;cursor:pointer;color:var(--btn-text)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+  .card{border:1px solid var(--outline);border-radius:var(--radius);background:var(--panel);padding:14px}
+  .card-top{display:flex;justify-content:space-between;gap:10px;align-items:center}
+  .ip{font-weight:700}
+  .status{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid var(--outline)}
+  .status.ok{border-color:var(--ok);color:var(--ok)}
+  .status.warn{border-color:var(--warn);color:var(--warn)}
+  .status.down{border-color:var(--down);color:var(--down)}
+  .status.unknown{border-color:var(--unknown);color:var(--unknown)}
+  .desc{color:var(--muted);margin:6px 0 10px 0}
+  .meta{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .actions{display:flex;gap:8px;flex-wrap:wrap}
+  .actions .btn:hover{filter:brightness(1.05)}
+  .spark{height:34px;border-radius:8px;background:var(--panel-2);border:1px dashed var(--outline);
+    display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;margin-bottom:10px}
+  .footer{color:var(--muted);font-size:12px;margin-top:12px}
 
   /* --------- Settings Drawer --------- */
-  .drawer-overlay{{position:fixed;inset:0;background:var(--overlay);opacity:0;pointer-events:none;transition:.2s}}
-  .drawer-overlay.active{{opacity:1;pointer-events:auto}}
-  .drawer{{position:fixed;top:0;right:-720px;width:700px;max-width:95vw;height:100vh;background:var(--panel);
-    border-left:1px solid var(--outline);box-shadow:0 0 30px rgba(0,0,0,.3);transition:right .25s}}
-  .drawer.active{{right:0}}
-  .drawer header{{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--outline)}}
-  .drawer header strong{{color:var(--text)}}
-  .drawer .body{{padding:14px;height:calc(100vh - 56px);overflow:auto}}
-  .form-group{{margin-bottom:12px}}
-  textarea{{width:100%;min-height:320px;background:var(--textarea-bg);color:var(--text);border:1px solid var(--textarea-border);
-    border-radius:10px;padding:10px;font-family:ui-monospace,Consolas,Menlo,monospace}}
-  .row{{display:grid;grid-template-columns:1fr;gap:14px}}
-  @media (min-width: 840px){{ .row{{grid-template-columns:1fr 1fr}} }}
-  .help{{color:var(--muted);font-size:12px;margin-top:6px}}
-  .toolbar{{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}}
-  .btn.primary{{background:var(--ok);border-color:var(--ok);color:#08130f}}
+  .drawer-overlay{position:fixed;inset:0;background:var(--overlay);opacity:0;pointer-events:none;transition:.2s}
+  .drawer-overlay.active{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:-720px;width:700px;max-width:95vw;height:100vh;background:var(--panel);
+    border-left:1px solid var(--outline);box-shadow:0 0 30px rgba(0,0,0,.3);transition:right .25s}
+  .drawer.active{right:0}
+  .drawer header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--outline)}
+  .drawer header strong{color:var(--text)}
+  .drawer .body{padding:14px;height:calc(100vh - 56px);overflow:auto}
+  .form-group{margin-bottom:12px}
+  textarea{width:100%;min-height:320px;background:var(--textarea-bg);color:var(--text);border:1px solid var(--textarea-border);
+    border-radius:10px;padding:10px;font-family:ui-monospace,Consolas,Menlo,monospace}
+  .row{display:grid;grid-template-columns:1fr;gap:14px}
+  @media (min-width: 840px){ .row{grid-template-columns:1fr 1fr} }
+  .help{color:var(--muted);font-size:12px;margin-top:6px}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .btn.primary{background:var(--ok);border-color:var(--ok);color:#08130f}
 </style>
 </head>
 <body>
@@ -212,7 +212,7 @@ def write_index_html(
     <div class="section">
       <h4>Time Range</h4>
       <div class="chips">
-        {chips_html}
+        __CHIPS__
       </div>
     </div>
 
@@ -238,18 +238,18 @@ def write_index_html(
     <div class="header">
       <h1>Targets Overview</h1>
       <div class="right">
-        <div class="subtitle">Showing: <strong id="count">0</strong> • Range: <strong id="rangeLabel">{default_range}</strong></div>
+        <div class="subtitle">Showing: <strong id="count">0</strong> • Range: <strong id="rangeLabel">__DEFAULT_RANGE__</strong></div>
         <button id="themeBtn" class="theme-toggle" title="Toggle Light/Dark">🌓 Theme</button>
         <button id="openSettings2" class="btn" title="Open Settings drawer">⚙️ Settings</button>
       </div>
     </div>
 
     <div class="grid" id="cards">
-{cards_html}
+__CARDS__
     </div>
 
     <div class="footer">
-      Generated: {generated_ts} — Auto-refresh: {refresh_state}
+      Generated: __GENERATED_TS__ — Auto-refresh: __REFRESH_STATE__
     </div>
   </main>
 </div>
@@ -267,8 +267,8 @@ def write_index_html(
       <strong>Load (browser)</strong> to restore them later, <strong>Reset</strong> to revert to files embedded in this page,
       or <strong>Download</strong> to save to your machine and then replace the files on the server:
       <ul>
-        <li><code>{settings_path}</code> — script settings</li>
-        <li><code>{targets_path}</code> — targets</li>
+        <li><code>__SETTINGS_PATH__</code> — script settings</li>
+        <li><code>__TARGETS_PATH__</code> — targets</li>
       </ul>
       This dashboard is static and cannot write to disk on the server.
     </div>
@@ -276,7 +276,7 @@ def write_index_html(
     <div class="row">
       <div class="form-group">
         <h3>mtr_script_settings.yaml</h3>
-        <textarea id="settingsTa">{settings_text}</textarea>
+        <textarea id="settingsTa">__SETTINGS_TEXT__</textarea>
         <div class="toolbar">
           <button class="btn primary" onclick="saveToBrowser('mtr_settings_yaml', document.getElementById('settingsTa').value)">💾 Save (browser)</button>
           <button class="btn" onclick="loadFromBrowser('mtr_settings_yaml', 'settingsTa')">⤴ Load (browser)</button>
@@ -288,7 +288,7 @@ def write_index_html(
 
       <div class="form-group">
         <h3>mtr_targets.yaml</h3>
-        <textarea id="targetsTa">{targets_text}</textarea>
+        <textarea id="targetsTa">__TARGETS_TEXT__</textarea>
         <div class="toolbar">
           <button class="btn primary" onclick="saveToBrowser('mtr_targets_yaml', document.getElementById('targetsTa').value)">💾 Save (browser)</button>
           <button class="btn" onclick="loadFromBrowser('mtr_targets_yaml', 'targetsTa')">⤴ Load (browser)</button>
@@ -368,8 +368,7 @@ def write_index_html(
   document.getElementById('closeDrawer').addEventListener('click', closeDrawer);
   overlay.addEventListener('click', closeDrawer);
 
-  // --- SAFER ORIGINALS (no template literals) ---
-  // We read the initial <textarea> values at runtime, after the DOM is parsed.
+  // --- SAFER ORIGINALS (captured from DOM; no template literals) ---
   const settingsTa = document.getElementById('settingsTa');
   const targetsTa  = document.getElementById('targetsTa');
   const originalSettings = settingsTa ? settingsTa.value : '';
@@ -377,22 +376,16 @@ def write_index_html(
 
   // --- Browser Save/Load/Reset/Download helpers ---
   function saveToBrowser(key, text) {
-    try {
-      localStorage.setItem(key, text);
-      alert('Saved to browser storage.');
-    } catch (e) {
-      alert('Failed to save to browser: ' + e);
-    }
+    try { localStorage.setItem(key, text); alert('Saved to browser storage.'); }
+    catch (e) { alert('Failed to save to browser: ' + e); }
   }
   function loadFromBrowser(key, textareaId) {
     const v = localStorage.getItem(key);
     if (v === null) { alert('No saved draft found in browser for: ' + key); return; }
-    const ta = document.getElementById(textareaId);
-    if (ta) ta.value = v;
+    const ta = document.getElementById(textareaId); if (ta) ta.value = v;
   }
   function resetTextarea(textareaId, original) {
-    const ta = document.getElementById(textareaId);
-    if (ta) ta.value = original;
+    const ta = document.getElementById(textareaId); if (ta) ta.value = original;
   }
   function downloadYaml(filename, text) {
     const blob = new Blob([text], { type: 'text/yaml' });
@@ -402,7 +395,6 @@ def write_index_html(
     document.body.appendChild(a); a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
   }
-  // Expose for inline onclick handlers
   window.saveToBrowser = saveToBrowser;
   window.loadFromBrowser = loadFromBrowser;
   window.resetTextarea = resetTextarea;
@@ -411,18 +403,19 @@ def write_index_html(
 
 </body>
 </html>
-""".format(
-        meta_refresh=meta_refresh,
-        chips_html=chips_html,                    # <-- FIXED: correct name
-        default_range=html_escape(default_range_label),
-        cards_html=cards_html,
-        generated_ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        refresh_state=("enabled" if auto_refresh_seconds > 0 else "disabled"),
-        settings_path=html_escape(settings_path),
-        targets_path=html_escape(targets_path),
-        settings_text=settings_text,
-        targets_text=targets_text,
-    )
+"""
+
+    page = (page_template
+            .replace("__META_REFRESH__", meta_refresh)
+            .replace("__CHIPS__", chips_html)
+            .replace("__DEFAULT_RANGE__", html_escape(default_range_label))
+            .replace("__CARDS__", cards_html)
+            .replace("__GENERATED_TS__", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            .replace("__REFRESH_STATE__", ("enabled" if auto_refresh_seconds > 0 else "disabled"))
+            .replace("__SETTINGS_PATH__", html_escape(settings_path))
+            .replace("__TARGETS_PATH__", html_escape(targets_path))
+            .replace("__SETTINGS_TEXT__", settings_text)
+            .replace("__TARGETS_TEXT__", targets_text))
 
     try:
         _atomic_write(index_path, page)
