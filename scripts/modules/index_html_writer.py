@@ -303,17 +303,17 @@ def write_index_html(
 
 <script>
   // --- Theme toggle with localStorage ---
-  (function initTheme(){{
+  (function initTheme(){
     const saved = localStorage.getItem('mtr_theme') || 'dark';
     if (saved === 'light') document.documentElement.setAttribute('data-theme','light');
-    document.getElementById('themeBtn').addEventListener('click', () => {{
+    document.getElementById('themeBtn').addEventListener('click', () => {
       const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
       const next = (cur === 'light') ? 'dark' : 'light';
       if (next === 'light') document.documentElement.setAttribute('data-theme','light');
       else document.documentElement.removeAttribute('data-theme');
       localStorage.setItem('mtr_theme', next);
-    }});
-  }})();
+    });
+  })();
 
   // --- Search + Status filters + Range label (cosmetic) ---
   const q = document.getElementById('q');
@@ -321,39 +321,39 @@ def write_index_html(
   const rangeLabel = document.getElementById('rangeLabel');
   const countEl = document.getElementById('count');
 
-  function updateVisibleCount(){{
+  function updateVisibleCount(){
     const visible = Array.from(cards.children).filter(el => el.style.display !== 'none').length;
     countEl.textContent = String(visible);
-  }}
+  }
 
-  q.addEventListener('input', () => {{
+  q.addEventListener('input', () => {
     const term = q.value.toLowerCase();
-    Array.from(cards.children).forEach(c => {{
+    Array.from(cards.children).forEach(c => {
       const ip = (c.dataset.ip || '').toLowerCase();
       const desc = (c.querySelector('.desc')?.textContent || '').toLowerCase();
       c.style.display = (ip.includes(term) || desc.includes(term)) ? '' : 'none';
-    }});
+    });
     updateVisibleCount();
-  }});
+  });
 
-  document.querySelectorAll('.chip[data-status]').forEach(chip => {{
-    chip.addEventListener('click', () => {{
+  document.querySelectorAll('.chip[data-status]').forEach(chip => {
+    chip.addEventListener('click', () => {
       const s = chip.dataset.status;
       const active = chip.classList.toggle('active');
-      document.querySelectorAll('.chip[data-status]').forEach(c => {{ if (c!==chip) c.classList.remove('active'); }});
-      Array.from(cards.children).forEach(c => {{
+      document.querySelectorAll('.chip[data-status]').forEach(c => { if (c!==chip) c.classList.remove('active'); });
+      Array.from(cards.children).forEach(c => {
         c.style.display = (!active || c.dataset.status === s) ? '' : 'none';
-      }});
+      });
       updateVisibleCount();
-    }});
-  }});
+    });
+  });
 
-  document.querySelectorAll('.chip[data-range]').forEach(chip => {{
-    chip.addEventListener('click', () => {{
+  document.querySelectorAll('.chip[data-range]').forEach(chip => {
+    chip.addEventListener('click', () => {
       rangeLabel.textContent = chip.dataset.range;
       // Future: re-render in-card sparklines for the chosen range.
-    }});
-  }});
+    });
+  });
 
   // Initial count
   updateVisibleCount();
@@ -361,43 +361,48 @@ def write_index_html(
   // --- Settings Drawer logic ---
   const drawer = document.getElementById('drawer');
   const overlay = document.getElementById('drawerOverlay');
-  function openDrawer(){{ drawer.classList.add('active'); overlay.classList.add('active'); }}
-  function closeDrawer(){{ drawer.classList.remove('active'); overlay.classList.remove('active'); }}
-  document.getElementById('openSettings').addEventListener('click', (e)=>{{ e.preventDefault(); openDrawer(); }});
-  document.getElementById('openSettings2').addEventListener('click', (e)=>{{ e.preventDefault(); openDrawer(); }});
+  function openDrawer(){ drawer.classList.add('active'); overlay.classList.add('active'); }
+  function closeDrawer(){ drawer.classList.remove('active'); overlay.classList.remove('active'); }
+  document.getElementById('openSettings').addEventListener('click', (e)=>{ e.preventDefault(); openDrawer(); });
+  document.getElementById('openSettings2').addEventListener('click', (e)=>{ e.preventDefault(); openDrawer(); });
   document.getElementById('closeDrawer').addEventListener('click', closeDrawer);
   overlay.addEventListener('click', closeDrawer);
 
-  // --- Embedded originals for Reset ---
-  const originalSettings = `{settings_text}`;
-  const originalTargets  = `{targets_text}`;
+  // --- SAFER ORIGINALS (no template literals) ---
+  // We read the initial <textarea> values at runtime, after the DOM is parsed.
+  const settingsTa = document.getElementById('settingsTa');
+  const targetsTa  = document.getElementById('targetsTa');
+  const originalSettings = settingsTa ? settingsTa.value : '';
+  const originalTargets  = targetsTa  ? targetsTa.value  : '';
 
   // --- Browser Save/Load/Reset/Download helpers ---
-  function saveToBrowser(key, text) {{
-    try {{
+  function saveToBrowser(key, text) {
+    try {
       localStorage.setItem(key, text);
       alert('Saved to browser storage.');
-    }} catch (e) {{
+    } catch (e) {
       alert('Failed to save to browser: ' + e);
-    }}
-  }}
-  function loadFromBrowser(key, textareaId) {{
+    }
+  }
+  function loadFromBrowser(key, textareaId) {
     const v = localStorage.getItem(key);
-    if (v === null) {{ alert('No saved draft found in browser for: ' + key); return; }}
-    document.getElementById(textareaId).value = v;
-  }}
-  function resetTextarea(textareaId, original) {{
-    document.getElementById(textareaId).value = original;
-  }}
-  function downloadYaml(filename, text) {{
-    const blob = new Blob([text], {{ type: 'text/yaml' }});
+    if (v === null) { alert('No saved draft found in browser for: ' + key); return; }
+    const ta = document.getElementById(textareaId);
+    if (ta) ta.value = v;
+  }
+  function resetTextarea(textareaId, original) {
+    const ta = document.getElementById(textareaId);
+    if (ta) ta.value = original;
+  }
+  function downloadYaml(filename, text) {
+    const blob = new Blob([text], { type: 'text/yaml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click();
-    setTimeout(() => {{ URL.revokeObjectURL(url); a.remove(); }}, 0);
-  }}
-  // Expose for onclick attributes
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+  }
+  // Expose for inline onclick handlers
   window.saveToBrowser = saveToBrowser;
   window.loadFromBrowser = loadFromBrowser;
   window.resetTextarea = resetTextarea;
