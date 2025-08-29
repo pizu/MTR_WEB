@@ -3,14 +3,15 @@
 modules/index_writer.py
 =======================
 
-Tiny orchestrator used by index_generator.py:
-- Builds the card model (per target) using helpers
+Small orchestrator called by index_generator.py:
+- Builds the card view model using helpers
 - Writes a unified index.html (sidebar + cards + theme toggle + in-page Settings drawer)
-- (Optional) Also writes a standalone settings.html if you ever want it (disabled by default)
+- All settings from mtr_script_settings.yaml; targets from mtr_targets.yaml
 
-All settings are sourced from mtr_script_settings.yaml (ranges, paths, refresh, etc.)
-Targets come from mtr_targets.yaml (loaded by index_generator.py).
-
+Logging
+-------
+Uses the logger provided by index_generator. Emits INFO about major steps,
+DEBUG about ranges and counts, and WARN/ERROR on recoverable failures.
 """
 
 from typing import Dict, Any, List
@@ -20,51 +21,49 @@ from modules.index_html_writer import write_index_html
 
 
 def generate_index_page(targets: List[Dict[str, Any]], settings: Dict[str, Any], logger) -> None:
-    """
-    Required by index_generator.py. Creates the top-level Dashboard page.
+    """Entry called by index_generator.py"""
+    logger.info("[index] Generating dashboard…")
 
-    Parameters
-    ----------
-    targets  : list[dict]
-        From mtr_targets.yaml (index_generator loads it).
-    settings : dict
-        From mtr_script_settings.yaml (loaded via modules.utils.load_settings).
-    logger   : logging.Logger
-        Standard project logger.
-    """
     html_dir = resolve_html_dir(settings)
     paths    = resolve_all_paths(settings)
 
-    # Whether to use fping for quick status on the index
+    logger.debug(f"[index] HTML_DIR={html_dir}")
+    logger.debug(f"[index] PATHS={paths}")
+
     enable_fping = settings.get("index_page", {}).get(
         "enable_fping_check",
         settings.get("enable_fping_check", True)
     )
-
-    # Refresh meta tag for the index
     auto_refresh_seconds = settings.get("html", {}).get(
         "auto_refresh_seconds",
         settings.get("html_auto_refresh_seconds", 0)
     )
+    logger.debug(f"[index] enable_fping={enable_fping}, auto_refresh_seconds={auto_refresh_seconds}")
 
-    # Pull *configured* ranges (labels) from YAML (no hard-coding)
+    # Use configured ranges from YAML (no hardcoding)
     ranges_cfg   = get_html_ranges(settings) or []
-    range_labels = [r.get("label") for r in ranges_cfg if r.get("label")] or ["15m"]
+    range_labels = [r.get("label") for r in ranges_cfg if r.get("label")]
+    if not range_labels:
+        logger.warning("[index] No ranges found in settings (html.ranges). Falling back to ['15m'].")
+        range_labels = ["15m"]
     default_range_label = range_labels[0]
+    logger.debug(f"[index] range_labels={range_labels}, default_range_label={default_range_label}")
 
-    # Build card view-model for all targets (status, last seen, hop count, etc.)
+    # Build cards
     cards = build_cards(
         targets=targets,
         paths=paths,
         enable_fping=enable_fping,
         logger=logger
     )
+    logger.info(f"[index] Prepared {len(cards)} target cards.")
 
-    # Embed the live YAML text in the page so Settings drawer can show/edit it
+    # File paths for the YAML editor drawer
     settings_path = settings.get("_loaded_from") or "mtr_script_settings.yaml"
     targets_path  = paths.get("targets", "mtr_targets.yaml")
+    logger.debug(f"[index] settings_path={settings_path}, targets_path={targets_path}")
 
-    # Write the unified Dashboard (includes Settings drawer)
+    # Write HTML
     write_index_html(
         html_dir=html_dir,
         cards=cards,
