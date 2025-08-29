@@ -2,293 +2,203 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>MTR_WEB – Target</title>
+  <title>MTR_WEB – Experimental Index</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:16px; }
-    header { display:flex; align-items:baseline; gap:12px; margin-bottom:12px; }
+    header { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px; margin-bottom:12px; }
     .muted { color:#666; font-size:.95rem; }
-    .row { display:grid; grid-template-columns: 1fr; gap:16px; }
-    @media (min-width: 1100px){ .row{ grid-template-columns:1.2fr .8fr } }
-    .card{ border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; box-shadow:0 1px 2px rgba(0,0,0,.04) }
-    .card h3{ margin:6px 0 12px; font-size:1.05rem }
     .toolbar{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0 12px }
     .pill{ padding:6px 10px; border:1px solid #d1d5db; border-radius:999px; background:#fff; cursor:pointer }
     .pill.active{ background:#111827; color:#fff; border-color:#111827 }
     .btn{ padding:6px 10px; border:1px solid #d1d5db; border-radius:8px; background:#fff; cursor:pointer }
-    .kv{ display:flex; gap:8px; flex-wrap:wrap }
-    .kv span{ background:#f3f4f6; border-radius:8px; padding:4px 8px; font-size:12px }
-    .logbox{ background:#0b1020; color:#b3c7ff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:10px; border-radius:8px; min-height: 120px; overflow:auto }
+    .card{ border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; margin-bottom:16px; box-shadow:0 1px 2px rgba(0,0,0,.04) }
     table{ width:100%; border-collapse: collapse }
     th,td{ padding:6px 8px; border-bottom:1px solid #eee; text-align:left; font-size:.95rem }
     th{ background:#fafafa; position: sticky; top:0 }
-    .grid2{ display:grid; grid-template-columns:1fr; gap:16px }
-    @media (min-width: 900px){ .grid2{ grid-template-columns:1fr 1fr } }
     .error{ background:#fee2e2; color:#991b1b; border:1px solid #fecaca; padding:8px 10px; border-radius:8px; margin-bottom:12px; display:none }
   </style>
 </head>
 <body>
 <header>
-  <h1 id="title">Target <code id="ip"></code></h1>
-  <div class="muted" id="desc"></div>
+  <h1>MTR_WEB Experimental Dashboard</h1>
+  <div class="muted">(index2.html – safe test page)</div>
 </header>
 
 <div id="error" class="error"></div>
 
-<section class="card">
-  <div class="toolbar" id="rangeBar">
-    <strong>Time range:</strong>
-    <!-- buttons injected dynamically for existing files -->
-    <span class="muted" id="last-update" style="margin-left:8px;"></span>
-  </div>
-  <div class="kv" id="status-line"></div>
-</section>
-
-<div class="row">
-  <section class="card">
-    <h3>Latency over time (per hop)</h3>
-    <canvas id="latencyChart" height="180"></canvas>
-    <div class="muted">Time-series (RRD→JSON). Uses <code>avg</code> per hop; switch to <code>last</code> inside the script if you prefer.</div>
-  </section>
-
-  <section class="card">
-    <h3>Current snapshot (per hop)</h3>
-    <div class="toolbar">
-      <button class="btn" id="refreshSnapshot">Refresh snapshot</button>
-    </div>
-    <canvas id="snapshotLatency" height="220"></canvas>
-    <div class="muted">Horizontal bars show latest point per hop from the selected time range.</div>
-  </section>
+<div class="card">
+  <label for="ipSelect"><strong>Target:</strong></label>
+  <select id="ipSelect"></select>
+  <span class="muted" id="desc"></span>
 </div>
 
-<div class="grid2" style="margin-top:16px;">
-  <section class="card">
-    <h3>Traceroute path</h3>
-    <table id="trTable">
-      <thead><tr><th>#</th><th>Hop</th><th>Hostname</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div class="muted">From <code>/opt/scripts/MTR_WEB/traces/&lt;ip&gt;_hops.json</code>.</div>
-  </section>
+<div class="card">
+  <div class="toolbar" id="rangeBar">
+    <strong>Time range:</strong>
+    <span class="muted" id="last-update" style="margin-left:8px;"></span>
+  </div>
+  <div id="status-line"></div>
+</div>
 
-  <section class="card">
-    <h3>Latest log excerpt</h3>
-    <div class="logbox" id="logbox">(optional: wire to your per-target log tail)</div>
-  </section>
+<div class="card">
+  <h3>Latency over time</h3>
+  <canvas id="latencyChart" height="200"></canvas>
+</div>
+
+<div class="card">
+  <h3>Snapshot per hop</h3>
+  <button class="btn" id="refreshSnapshot">Refresh snapshot</button>
+  <canvas id="snapshotLatency" height="220"></canvas>
+</div>
+
+<div class="card">
+  <h3>Traceroute</h3>
+  <table id="trTable">
+    <thead><tr><th>#</th><th>Hop</th><th>Hostname</th></tr></thead>
+    <tbody></tbody>
+  </table>
 </div>
 
 <script>
-(function(){
-  // -------- CONFIG for your layout --------
-  // IP comes from the filename, e.g. "/html/8.8.8.8.html"
-  const pathParts = document.location.pathname.split('/').filter(Boolean);
-  const fileName = pathParts[pathParts.length - 1] || '8.8.8.8.html';
-  const TARGET_IP = fileName.replace(/\.html$/,'');
-  document.getElementById('ip').textContent = TARGET_IP;
+(async function(){
+  const DATA_BASE  = 'data';      // /html/data/
+  const TRACE_BASE = '../traces'; // /traces/
 
-  // Paths relative to /opt/scripts/MTR_WEB/html/
-  const DATA_BASE  = 'data';      // -> html/data/<IP>_<range>.json
-  const TRACE_BASE = '../traces'; // -> traces/<IP>_hops.json
+  const RANGES = ['15m','30m','1h','6h','12h','24h','2d','2w','1w','1M','2M','6M','1Y'];
+  let TARGET_IP = new URLSearchParams(location.search).get('ip');
+  let availableRanges = [];
+  let currentRange = null;
+  let latencyChart = null, snapshotChart = null;
 
-  // Your actual range set (we’ll probe which exist)
-  const CANDIDATE_RANGES = ['15m','30m','1h','6h','12h','24h','2d','2w','1w','1M','2M','6M','1Y'];
-
-  // -------- UI refs --------
-  const errBox = document.getElementById('error');
+  const ipSelect = document.getElementById('ipSelect');
+  const trTableBody = document.querySelector('#trTable tbody');
   const statusLine = document.getElementById('status-line');
   const lastUpdateEl = document.getElementById('last-update');
-  const trTableBody = document.querySelector('#trTable tbody');
+  const errBox = document.getElementById('error');
 
-  function showErr(msg){ console.error(msg); errBox.textContent = msg; errBox.style.display = 'block'; }
-  function clearErr(){ errBox.style.display='none'; errBox.textContent=''; }
+  function showErr(msg){ console.error(msg); errBox.textContent = msg; errBox.style.display='block'; }
+  function clearErr(){ errBox.style.display='none'; }
 
-  function dataPath(range){ return `${DATA_BASE}/${TARGET_IP}_${range}.json`; }
-  function hopsPath(){ return `${TRACE_BASE}/${TARGET_IP}_hops.json`; }
+  function dataPath(ip,range){ return `${DATA_BASE}/${ip}_${range}.json`; }
+  function hopsPath(ip){ return `${TRACE_BASE}/${ip}_hops.json`; }
 
   async function getJSON(url){
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    const res = await fetch(url, {cache:'no-store'});
+    if(!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.json();
   }
 
-  // ---- JSON normalizers (handles your generators) ----
-  function normalizeTimes(json){
-    return json.timestamps || json.times || json.labels || [];
-  }
+  function normalizeTimes(json){ return json.timestamps || json.times || json.labels || []; }
   function normalizeSeries(json){
     let arr = json.series || json.hops || [];
-    if ((!arr || !arr.length) && json.data && (json.data.series || json.data.hops)){
-      arr = json.data.series || json.data.hops;
-    }
-    return arr.map((s, idx) => {
-      const hop = (s.hop != null) ? s.hop : (s.index != null ? s.index : idx);
-      const label = s.label || s.ip || s.addr || s.host || s.hostname || `hop${hop}`;
-      const avg  = Array.isArray(s.avg) ? s.avg : null;
-      const last = Array.isArray(s.last) ? s.last : null;
-      const best = Array.isArray(s.best) ? s.best : null;
-      const loss = Array.isArray(s.loss) ? s.loss : null;
-      return { hop, label, avg, last, best, loss };
-    });
+    return arr.map((s,idx)=>({
+      hop: s.hop ?? idx,
+      label: s.label || s.ip || s.addr || s.host || `hop${idx}`,
+      avg: Array.isArray(s.avg)?s.avg:null,
+      last:Array.isArray(s.last)?s.last:null
+    }));
   }
 
   function extractSeries(json){
     const labels = normalizeTimes(json);
     const raw = normalizeSeries(json);
-    const datasets = raw.map(s => {
-      const data = s.avg || s.last || [];
-      return {
-        label: `h${s.hop} ${s.label}`.trim(),
-        data,
-        borderWidth: 1,
-        pointRadius: 0,
-        tension: 0.2
-      };
-    });
-    return { labels, datasets };
+    return {labels, datasets: raw.map(s=>({
+      label:`h${s.hop} ${s.label}`,
+      data:s.avg || s.last || [],
+      borderWidth:1, pointRadius:0, tension:0.2
+    }))};
   }
-
   function extractSnapshot(json){
     const raw = normalizeSeries(json);
-    const labels = [];
-    const data = [];
-    raw.forEach(s => {
-      const arr = s.avg || s.last || [];
-      const latest = arr.length ? arr[arr.length - 1] : null;
-      labels.push(`h${s.hop} ${s.label}`.trim());
-      data.push(latest ?? null);
-    });
-    return { labels, data };
+    return {
+      labels: raw.map(s=>`h${s.hop} ${s.label}`),
+      data: raw.map(s=>{
+        const arr=s.avg||s.last||[]; return arr[arr.length-1]??null;
+      })
+    };
   }
 
-  let latencyChart = null, snapshotChart = null;
   function renderLatencyChart(series){
-    const ctx = document.getElementById('latencyChart').getContext('2d');
-    if (latencyChart) latencyChart.destroy();
-    latencyChart = new Chart(ctx, {
-      type: 'line',
-      data: { labels: series.labels, datasets: series.datasets },
-      options: {
-        animation: false, responsive: true, maintainAspectRatio: false,
-        scales: { x: { title:{ display:true, text:'time'} },
-                  y: { title:{ display:true, text:'latency (ms)' }, beginAtZero: true } },
-        interaction: { mode: 'nearest', intersect: false },
-        plugins: { legend: { position:'bottom' },
-          tooltip: { callbacks: { title: (c)=>`Time: ${c[0]?.label ?? ''}` } } }
-      }
-    });
+    const ctx=document.getElementById('latencyChart').getContext('2d');
+    if(latencyChart) latencyChart.destroy();
+    latencyChart=new Chart(ctx,{type:'line',data:series,
+      options:{animation:false,responsive:true,scales:{y:{beginAtZero:true}}}});
   }
   function renderSnapshotChart(snap){
-    const ctx = document.getElementById('snapshotLatency').getContext('2d');
-    if (snapshotChart) snapshotChart.destroy();
-    snapshotChart = new Chart(ctx, {
-      type: 'bar',
-      data: { labels: snap.labels, datasets: [{ label:'latest avg latency (ms)', data: snap.data }] },
-      options: {
-        indexAxis: 'y', animation:false, responsive:true, maintainAspectRatio:false,
-        scales: { x: { title:{ display:true, text:'ms' }, beginAtZero:true } },
-        plugins: { legend:{ display:true },
-          tooltip:{ callbacks:{ label:(ctx)=>`${ctx.dataset.label}: ${ctx.parsed.x ?? 'n/a'} ms` } } }
-      }
-    });
+    const ctx=document.getElementById('snapshotLatency').getContext('2d');
+    if(snapshotChart) snapshotChart.destroy();
+    snapshotChart=new Chart(ctx,{type:'bar',
+      data:{labels:snap.labels,datasets:[{label:'latest avg (ms)',data:snap.data}]},
+      options:{indexAxis:'y',responsive:true,scales:{x:{beginAtZero:true}}}});
   }
 
-  function renderTracerouteTable(hopsJson){
-    trTableBody.innerHTML = '';
-    const hops = hopsJson?.hops || hopsJson || [];
-    hops.forEach((h, i) => {
-      const tr = document.createElement('tr');
-      const tdIdx = document.createElement('td'); tdIdx.textContent = i;
-      const tdIp  = document.createElement('td'); tdIp.textContent = h.ip || h.addr || h.host || '';
-      const tdName= document.createElement('td'); tdName.textContent = h.name || h.hostname || '';
-      tr.appendChild(tdIdx); tr.appendChild(tdIp); tr.appendChild(tdName);
+  function renderTraceroute(hops){
+    trTableBody.innerHTML='';
+    (hops.hops||hops||[]).forEach((h,i)=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${i}</td><td>${h.ip||''}</td><td>${h.hostname||''}</td>`;
       trTableBody.appendChild(tr);
     });
-    if (hopsJson?.description) {
-      document.getElementById('desc').textContent = hopsJson.description;
-    }
   }
 
-  function renderStatus(json){
-    statusLine.innerHTML = '';
-    const parts = [];
-    if (json?.label) parts.push(`range: ${json.label}`);
-    if (json?.seconds) parts.push(`window: ${json.seconds}s`);
-    if (json?.step) parts.push(`step: ${json.step}s`);
-    const ser = normalizeSeries(json);
-    if (ser?.length) parts.push(`hops: ${ser.length}`);
-    parts.forEach(p=>{
-      const span = document.createElement('span'); span.textContent=p; statusLine.appendChild(span);
+  async function loadRange(ip,range){
+    try{
+      const json=await getJSON(dataPath(ip,range));
+      renderLatencyChart(extractSeries(json));
+      renderSnapshotChart(extractSnapshot(json));
+      lastUpdateEl.textContent="updated "+new Date().toLocaleTimeString();
+    }catch(e){ showErr(e.message); }
+  }
+  async function loadTraceroute(ip){
+    try{ renderTraceroute(await getJSON(hopsPath(ip))); }catch(e){ console.warn("no hops",e); }
+  }
+
+  // --- Init ---
+  if(!TARGET_IP){
+    // Build dropdown from filenames in /html/data/ (requires directory listing enabled)
+    // If Apache doesn't list JSON files, you can hardcode your IPs here instead.
+    const resp=await fetch(DATA_BASE+"/");
+    const text=await resp.text();
+    const ips=[...text.matchAll(/([0-9.]+)_\d+[A-Za-z]+\.json/g)].map(m=>m[1]);
+    const uniq=[...new Set(ips)];
+    uniq.forEach(ip=>{
+      const opt=document.createElement('option');
+      opt.value=ip; opt.textContent=ip;
+      ipSelect.appendChild(opt);
     });
-    lastUpdateEl.textContent = `updated at ${new Date().toLocaleTimeString()}`;
+    ipSelect.addEventListener('change',()=>{
+      TARGET_IP=ipSelect.value; start();
+    });
+    if(uniq.length){ TARGET_IP=uniq[0]; ipSelect.value=TARGET_IP; }
+  }else{
+    ipSelect.innerHTML=`<option>${TARGET_IP}</option>`;
   }
+  start();
 
-  let availableRanges = [];
-  let currentRange = null;
-
-  async function discoverRanges(){
-    const found = [];
-    for (const r of CANDIDATE_RANGES){
-      try { await getJSON(dataPath(r)); found.push(r); } catch(_) {}
+  async function start(){
+    if(!TARGET_IP) return;
+    clearErr();
+    // probe available ranges
+    availableRanges=[];
+    for(const r of RANGES){
+      try{ await getJSON(dataPath(TARGET_IP,r)); availableRanges.push(r); }catch(_){}
     }
-    if (!found.length){
-      showErr(`No range JSON found for ${TARGET_IP}. Expected: ${dataPath('1h')}`);
-    }
-    availableRanges = found;
-    const bar = document.getElementById('rangeBar');
-    bar.querySelectorAll('.pill').forEach(n=>n.remove());
-    found.forEach((r, idx) => {
-      const b = document.createElement('button');
-      b.className = 'pill' + (idx===0 ? ' active' : '');
-      b.dataset.range = r;
-      b.textContent = r;
-      b.addEventListener('click', () => switchRange(r));
+    if(!availableRanges.length){ showErr("No data files found for "+TARGET_IP); return; }
+    currentRange=availableRanges[0];
+    await loadRange(TARGET_IP,currentRange);
+    await loadTraceroute(TARGET_IP);
+    document.getElementById('refreshSnapshot').onclick=()=>loadRange(TARGET_IP,currentRange);
+    const bar=document.getElementById('rangeBar');
+    bar.querySelectorAll('.pill').forEach(b=>b.remove());
+    availableRanges.forEach(r=>{
+      const b=document.createElement('button');
+      b.className='pill'+(r===currentRange?' active':'');
+      b.textContent=r; b.onclick=()=>{currentRange=r;loadRange(TARGET_IP,r);};
       bar.appendChild(b);
     });
-    if (found.length) currentRange = found[0];
   }
-
-  function markActiveRange(range){
-    document.querySelectorAll('.pill').forEach(b => {
-      b.classList.toggle('active', b.dataset.range === range);
-    });
-  }
-
-  async function loadRange(range){
-    clearErr();
-    const json = await getJSON(dataPath(range));
-    renderLatencyChart(extractSeries(json));
-    renderStatus(json);
-  }
-  async function refreshSnapshot(){
-    clearErr();
-    const json = await getJSON(dataPath(currentRange));
-    renderSnapshotChart(extractSnapshot(json));
-  }
-  async function loadTraceroute(){
-    try{
-      const hops = await getJSON(hopsPath());
-      renderTracerouteTable(hops);
-    } catch(e){
-      console.warn('Traceroute JSON missing:', hopsPath(), e.message);
-    }
-  }
-  async function switchRange(range){
-    if (!availableRanges.includes(range)) return;
-    currentRange = range;
-    markActiveRange(range);
-    await loadRange(range);
-    await refreshSnapshot();
-  }
-
-  (async function boot(){
-    await discoverRanges();
-    if (!availableRanges.length) return;
-    await loadRange(currentRange);
-    await refreshSnapshot();
-    await loadTraceroute();
-    document.getElementById('refreshSnapshot').addEventListener('click', refreshSnapshot);
-  })();
 })();
 </script>
 </body>
