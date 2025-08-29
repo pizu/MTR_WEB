@@ -31,6 +31,7 @@ You can split this module later into smaller files:
 
 import os
 import json
+import chips
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
