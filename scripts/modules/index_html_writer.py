@@ -7,18 +7,17 @@ Writes the unified Dashboard (index.html) with:
 - Left sidebar (Search, Status chips, Time ranges from YAML)
 - Right card grid (per target)
 - Top-right Light/Dark theme toggle
-- Embedded Settings Drawer (edit YAMLs in-place; Download locally)
+- Embedded Settings Drawer (edit YAMLs; Save to browser, Load, Reset, Download)
 
 Safety
 ------
-- Avoid f-strings in large HTML blocks to prevent brace parsing issues.
-- Use .format(...) with {{ }} escaping for literal braces.
-- Write to a temporary file first, then atomic replace.
+- No f-strings in large HTML blocks (use .format with doubled braces).
+- Atomic write to avoid blank pages if something goes wrong.
 
 Logging
 -------
 - INFO: start/end, file paths, counts
-- DEBUG: range labels, defaults, paths
+- DEBUG: ranges, paths
 - WARN/ERROR: failures, fallbacks
 """
 
@@ -53,9 +52,6 @@ def write_index_html(
     targets_path: str,
     logger
 ) -> None:
-    """
-    Writes <html_dir>/index.html with embedded Settings drawer.
-    """
     os.makedirs(html_dir, exist_ok=True)
     index_path = os.path.join(html_dir, "index.html")
     logger.info(f"[index] Writing {index_path} …")
@@ -71,7 +67,7 @@ def write_index_html(
     targets_text  = html_escape(_read_text_safely(targets_path))
     logger.debug(f"[index] Prefilled settings drawer from {settings_path} and {targets_path}")
 
-    # Build cards HTML
+    # Cards HTML
     cards_html_parts = []
     for c in (cards or []):
         ip   = html_escape(c["ip"])
@@ -80,8 +76,7 @@ def write_index_html(
         status_label = html_escape(c["status_label"])
         last_seen = html_escape(c["last_seen"])
         hops = html_escape(c["hops"])
-
-        card = (
+        cards_html_parts.append(
             "      <div class='card' data-ip='{ip}' data-status='{status}'>\n"
             "        <div class='card-top'>\n"
             "          <div class='ip'>{ip}</div>\n"
@@ -94,18 +89,18 @@ def write_index_html(
             "          <a class='btn' href='{ip}.html'>View Details</a>\n"
             "          <a class='btn' href='logs/{ip}.log'>Logs</a>\n"
             "        </div>\n"
-            "      </div>\n"
-        ).format(ip=ip, status=status_class, label=status_label, desc=desc, last=last_seen, hops=hops)
-        cards_html_parts.append(card)
-
+            "      </div>\n".format(
+                ip=ip, status=status_class, label=status_label, desc=desc, last=last_seen, hops=hops
+            )
+        )
     cards_html = "".join(cards_html_parts)
 
-    # HEAD (meta refresh injected if >0)
+    # Meta refresh (optional)
     meta_refresh = ""
     if auto_refresh_seconds > 0:
         meta_refresh = "<meta http-equiv='refresh' content='{s}'>".format(s=int(auto_refresh_seconds))
 
-    # Full page template (all literal braces are doubled)
+    # Full page (note doubled braces for literal CSS/JS braces)
     page = """<!doctype html>
 <html lang='en'>
 <head>
@@ -114,21 +109,28 @@ def write_index_html(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MTR • Dashboard</title>
 <style>
+  /* --------- Theming --------- */
   :root {{
-    --bg:#0f1420; --panel:#131a28; --panel-2:#0d1320; --text:#e9eef7; --muted:#9fb0c6;
-    --ok:#1faa70; --warn:#d7a021; --down:#cf3b43; --unknown:#6b7280;
-    --outline:#26324a; --chip:#1b2538; --radius:14px; --overlay:rgba(0,0,0,.45);
+    --bg:#0e1118; --panel:#141a26; --panel-2:#0f1623; --text:#eaf1ff; --muted:#aab8d0;
+    --ok:#17b276; --warn:#d8a023; --down:#d04b52; --unknown:#8a92a6;
+    --outline:#2a3852; --chip:#182238; --radius:14px; --overlay:rgba(0,0,0,.45);
+    --link:#8ab4f8; --btn-text:#eaf1ff;
+    --textarea-bg:#0b1320; --textarea-border:#324463;
   }}
   :root[data-theme="light"] {{
-    --bg:#f6f7fb; --panel:#ffffff; --panel-2:#f2f4f9; --text:#10182a; --muted:#4b5563;
+    --bg:#f6f8fc; --panel:#ffffff; --panel-2:#f1f4f9; --text:#111827; --muted:#4b5563;
     --ok:#158f60; --warn:#9b750f; --down:#b1353c; --unknown:#6b7280;
     --outline:#d5d8e1; --chip:#eef2f7; --overlay:rgba(0,0,0,.20);
+    --link:#1d4ed8; --btn-text:#111827;
+    --textarea-bg:#ffffff; --textarea-border:#d5d8e1;
   }}
 
   *{{box-sizing:border-box}}
   body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,Arial,sans-serif}}
-  a{{color:inherit;text-decoration:none}}
+  a{{color:var(--link);text-decoration:none}}
   .layout{{display:grid;grid-template-columns:280px 1fr;min-height:100vh}}
+
+  /* --------- Sidebar --------- */
   .sidebar{{
     background:linear-gradient(180deg,var(--panel),var(--panel-2));
     border-right:1px solid var(--outline);padding:16px;position:sticky;top:0;height:100vh;overflow:auto;
@@ -153,11 +155,13 @@ def write_index_html(
   .chip.unknown{{border-color:var(--unknown);color:var(--unknown)}}
   .nav a{{display:block;padding:10px;border-radius:10px;color:var(--text);opacity:.9}}
   .nav a:hover{{background:var(--panel-2)}}
+
+  /* --------- Content / Cards --------- */
   .content{{padding:20px}}
   .header{{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;flex-wrap:wrap}}
   .header h1{{font-size:18px;margin:0}}
   .header .right{{display:flex;align-items:center;gap:8px}}
-  .btn, .theme-toggle{{border:1px solid var(--outline);background:var(--panel-2);padding:6px 10px;border-radius:10px;cursor:pointer}}
+  .btn, .theme-toggle{{border:1px solid var(--outline);background:var(--panel-2);padding:6px 10px;border-radius:10px;cursor:pointer;color:var(--btn-text)}}
   .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}}
   .card{{border:1px solid var(--outline);border-radius:var(--radius);background:var(--panel);padding:14px}}
   .card-top{{display:flex;justify-content:space-between;gap:10px;align-items:center}}
@@ -175,20 +179,23 @@ def write_index_html(
     display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px;margin-bottom:10px}}
   .footer{{color:var(--muted);font-size:12px;margin-top:12px}}
 
-  /* Settings Drawer */
+  /* --------- Settings Drawer --------- */
   .drawer-overlay{{position:fixed;inset:0;background:var(--overlay);opacity:0;pointer-events:none;transition:.2s}}
   .drawer-overlay.active{{opacity:1;pointer-events:auto}}
   .drawer{{position:fixed;top:0;right:-720px;width:700px;max-width:95vw;height:100vh;background:var(--panel);
     border-left:1px solid var(--outline);box-shadow:0 0 30px rgba(0,0,0,.3);transition:right .25s}}
   .drawer.active{{right:0}}
   .drawer header{{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--outline)}}
+  .drawer header strong{{color:var(--text)}}
   .drawer .body{{padding:14px;height:calc(100vh - 56px);overflow:auto}}
   .form-group{{margin-bottom:12px}}
-  textarea{{width:100%;min-height:320px;background:var(--panel-2);color:var(--text);border:1px solid var(--outline);
+  textarea{{width:100%;min-height:320px;background:var(--textarea-bg);color:var(--text);border:1px solid var(--textarea-border);
     border-radius:10px;padding:10px;font-family:ui-monospace,Consolas,Menlo,monospace}}
   .row{{display:grid;grid-template-columns:1fr;gap:14px}}
   @media (min-width: 840px){{ .row{{grid-template-columns:1fr 1fr}} }}
   .help{{color:var(--muted);font-size:12px;margin-top:6px}}
+  .toolbar{{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}}
+  .btn.primary{{background:var(--ok);border-color:var(--ok);color:#08130f}}
 </style>
 </head>
 <body>
@@ -256,31 +263,39 @@ def write_index_html(
   </header>
   <div class="body">
     <div class="help">
-      Edit the YAML files below, then <strong>Download</strong> them and replace on the server:
+      Edit the YAML files below. You can <strong>Save (browser)</strong> to keep drafts in this browser,
+      <strong>Load (browser)</strong> to restore them later, <strong>Reset</strong> to revert to files embedded in this page,
+      or <strong>Download</strong> to save to your machine and then replace the files on the server:
       <ul>
         <li><code>{settings_path}</code> — script settings</li>
         <li><code>{targets_path}</code> — targets</li>
       </ul>
-      This dashboard is static and cannot write files to disk.
+      This dashboard is static and cannot write to disk on the server.
     </div>
 
     <div class="row">
       <div class="form-group">
         <h3>mtr_script_settings.yaml</h3>
         <textarea id="settingsTa">{settings_text}</textarea>
-        <div class="help">Ranges shown on the sidebar come from <code>html.ranges</code> (via <code>get_html_ranges()</code>).</div>
-        <div style="margin-top:8px">
-          <button class="btn" onclick="downloadYaml('mtr_script_settings.yaml', document.getElementById('settingsTa').value)">⬇ Download settings.yaml</button>
+        <div class="toolbar">
+          <button class="btn primary" onclick="saveToBrowser('mtr_settings_yaml', document.getElementById('settingsTa').value)">💾 Save (browser)</button>
+          <button class="btn" onclick="loadFromBrowser('mtr_settings_yaml', 'settingsTa')">⤴ Load (browser)</button>
+          <button class="btn" onclick="resetTextarea('settingsTa', originalSettings)">↺ Reset</button>
+          <button class="btn" onclick="downloadYaml('mtr_script_settings.yaml', document.getElementById('settingsTa').value)">⬇ Download</button>
         </div>
+        <div class="help">Ranges shown on the sidebar come from <code>html.ranges</code> (via <code>get_html_ranges()</code>).</div>
       </div>
 
       <div class="form-group">
         <h3>mtr_targets.yaml</h3>
         <textarea id="targetsTa">{targets_text}</textarea>
-        <div class="help">Each target supports <code>ip</code> and optional <code>description</code>.</div>
-        <div style="margin-top:8px">
-          <button class="btn" onclick="downloadYaml('mtr_targets.yaml', document.getElementById('targetsTa').value)">⬇ Download targets.yaml</button>
+        <div class="toolbar">
+          <button class="btn primary" onclick="saveToBrowser('mtr_targets_yaml', document.getElementById('targetsTa').value)">💾 Save (browser)</button>
+          <button class="btn" onclick="loadFromBrowser('mtr_targets_yaml', 'targetsTa')">⤴ Load (browser)</button>
+          <button class="btn" onclick="resetTextarea('targetsTa', originalTargets)">↺ Reset</button>
+          <button class="btn" onclick="downloadYaml('mtr_targets.yaml', document.getElementById('targetsTa').value)">⬇ Download</button>
         </div>
+        <div class="help">Each target supports <code>ip</code> and optional <code>description</code>.</div>
       </div>
     </div>
   </div>
@@ -353,7 +368,27 @@ def write_index_html(
   document.getElementById('closeDrawer').addEventListener('click', closeDrawer);
   overlay.addEventListener('click', closeDrawer);
 
-  // --- Static "download file" helpers ---
+  // --- Embedded originals for Reset ---
+  const originalSettings = `{settings_text}`;
+  const originalTargets  = `{targets_text}`;
+
+  // --- Browser Save/Load/Reset/Download helpers ---
+  function saveToBrowser(key, text) {{
+    try {{
+      localStorage.setItem(key, text);
+      alert('Saved to browser storage.');
+    }} catch (e) {{
+      alert('Failed to save to browser: ' + e);
+    }}
+  }}
+  function loadFromBrowser(key, textareaId) {{
+    const v = localStorage.getItem(key);
+    if (v === null) {{ alert('No saved draft found in browser for: ' + key); return; }}
+    document.getElementById(textareaId).value = v;
+  }}
+  function resetTextarea(textareaId, original) {{
+    document.getElementById(textareaId).value = original;
+  }}
   function downloadYaml(filename, text) {{
     const blob = new Blob([text], {{ type: 'text/yaml' }});
     const url = URL.createObjectURL(blob);
@@ -362,6 +397,10 @@ def write_index_html(
     document.body.appendChild(a); a.click();
     setTimeout(() => {{ URL.revokeObjectURL(url); a.remove(); }}, 0);
   }}
+  // Expose for onclick attributes
+  window.saveToBrowser = saveToBrowser;
+  window.loadFromBrowser = loadFromBrowser;
+  window.resetTextarea = resetTextarea;
   window.downloadYaml = downloadYaml;
 </script>
 
@@ -369,7 +408,7 @@ def write_index_html(
 </html>
 """.format(
         meta_refresh=meta_refresh,
-        chips_html=chips_html,
+        chips_html=chips_html,                    # <-- FIXED: correct name
         default_range=html_escape(default_range_label),
         cards_html=cards_html,
         generated_ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -380,7 +419,6 @@ def write_index_html(
         targets_text=targets_text,
     )
 
-    # Atomic write (prevents partial/blank pages if errors occur mid-write)
     try:
         _atomic_write(index_path, page)
         logger.info(f"[index] Wrote {index_path} with {len(cards)} targets and embedded Settings drawer.")
