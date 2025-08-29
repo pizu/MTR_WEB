@@ -12,16 +12,12 @@ Responsibilities (high-level)
 
 2) Maintain exactly one running watchdog per *active* target.
    - Child script: scripts/mtr_watchdog.py
-   - If a watchdog dies, restart it.
-   - If a target is paused/removed, stop it.
-   - If a target's source_ip changes, restart with new arg.
 
 3) Run the reporting pipeline on schedule and on YAML changes:
-       graph_generator.py → timeseries_exporter.py → html_generator.py → index_generator.py
+       timeseries_exporter.py → html_generator.py → index_generator.py
+   (All PNG graphing code and graph_generator.py have been removed from the pipeline.)
 
-4) Hot‑reload logging levels when settings change (no restart).
-
-This file delegates plumbing to modules/controller_utils.py so it stays small and clear.
+4) Hot-reload logging levels when settings change (no restart).
 """
 
 from __future__ import annotations
