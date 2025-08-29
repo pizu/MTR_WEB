@@ -7,15 +7,19 @@ Writes the unified Dashboard (index.html) with:
 - Left sidebar (Search, Status chips, Time ranges from YAML)
 - Right card grid (per target)
 - Top-right Light/Dark theme toggle
-- Embedded Settings Drawer:
-    • View/Edit mtr_script_settings.yaml and mtr_targets.yaml in-place
-    • Download the edited YAMLs (static-only; upload back via SSH/Webmin)
+- Embedded Settings Drawer (edit YAMLs in-place; Download locally)
 
-No external frameworks required. Clean, production-friendly CSS.
+Safety
+------
+- Avoid f-strings in large HTML blocks to prevent brace parsing issues.
+- Use .format(...) with {{ }} escaping for literal braces.
+- Write to a temporary file first, then atomic replace.
 
-NOTE:
-- We *embed* the current YAML texts into the page so the drawer can display them.
-- We DO NOT write files from the browser; it is a static site.
+Logging
+-------
+- INFO: start/end, file paths, counts
+- DEBUG: range labels, defaults, paths
+- WARN/ERROR: failures, fallbacks
 """
 
 import os
@@ -32,6 +36,13 @@ def _read_text_safely(path: str) -> str:
         return ""
 
 
+def _atomic_write(path: str, content: str):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp, path)
+
+
 def write_index_html(
     html_dir: str,
     cards: List[Dict[str, str]],
@@ -44,39 +55,62 @@ def write_index_html(
 ) -> None:
     """
     Writes <html_dir>/index.html with embedded Settings drawer.
-
-    Parameters
-    ----------
-    cards                : list[dict]   → built by index_helpers.build_cards
-    range_labels         : list[str]    → from get_html_ranges(settings)
-    default_range_label  : str          → usually first item of range_labels
-    auto_refresh_seconds : int          → meta refresh; 0 disables
-    settings_path        : str          → absolute path used to read current YAML
-    targets_path         : str          → absolute path used to read current YAML
     """
     os.makedirs(html_dir, exist_ok=True)
     index_path = os.path.join(html_dir, "index.html")
+    logger.info(f"[index] Writing {index_path} …")
 
-    chips_html = "\n".join(
-        f"<div class='chip' data-range='{html_escape(lbl)}'>{html_escape(lbl)}</div>"
+    # Sidebar chips (from YAML ranges)
+    chips_html = "\n        ".join(
+        "<div class='chip' data-range='{lbl}'>{lbl}</div>".format(lbl=html_escape(lbl))
         for lbl in (range_labels or [])
     )
 
-    # Read current YAML texts to prefill the drawer editors
-    settings_text = _read_text_safely(settings_path)
-    targets_text  = _read_text_safely(targets_path)
+    # Read current YAML texts for the Settings drawer
+    settings_text = html_escape(_read_text_safely(settings_path))
+    targets_text  = html_escape(_read_text_safely(targets_path))
+    logger.debug(f"[index] Prefilled settings drawer from {settings_path} and {targets_path}")
 
-    try:
-        with open(index_path, "w", encoding="utf-8") as f:
-            f.write("<!doctype html><html lang='en'><head><meta charset='utf-8'>")
-            if auto_refresh_seconds > 0:
-                f.write(f"<meta http-equiv='refresh' content='{auto_refresh_seconds}'>")
-                logger.info(f"[index] Auto-refresh enabled: {auto_refresh_seconds}s")
-            else:
-                logger.info("[index] Auto-refresh disabled")
+    # Build cards HTML
+    cards_html_parts = []
+    for c in (cards or []):
+        ip   = html_escape(c["ip"])
+        desc = html_escape(c["desc"])
+        status_class = c["status_class"]
+        status_label = html_escape(c["status_label"])
+        last_seen = html_escape(c["last_seen"])
+        hops = html_escape(c["hops"])
 
-            # --- HEAD: Styles (Dark & Light theme) ---
-            f.write(f"""
+        card = (
+            "      <div class='card' data-ip='{ip}' data-status='{status}'>\n"
+            "        <div class='card-top'>\n"
+            "          <div class='ip'>{ip}</div>\n"
+            "          <div class='status {status}' title='{label}'>{label}</div>\n"
+            "        </div>\n"
+            "        <div class='desc'>{desc}</div>\n"
+            "        <div class='meta'>Last seen: {last} • Hops: {hops} • Loss: —</div>\n"
+            "        <div class='spark' id='spark-{ip}'>[mini trend]</div>\n"
+            "        <div class='actions'>\n"
+            "          <a class='btn' href='{ip}.html'>View Details</a>\n"
+            "          <a class='btn' href='logs/{ip}.log'>Logs</a>\n"
+            "        </div>\n"
+            "      </div>\n"
+        ).format(ip=ip, status=status_class, label=status_label, desc=desc, last=last_seen, hops=hops)
+        cards_html_parts.append(card)
+
+    cards_html = "".join(cards_html_parts)
+
+    # HEAD (meta refresh injected if >0)
+    meta_refresh = ""
+    if auto_refresh_seconds > 0:
+        meta_refresh = "<meta http-equiv='refresh' content='{s}'>".format(s=int(auto_refresh_seconds))
+
+    # Full page template (all literal braces are doubled)
+    page = """<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+{meta_refresh}
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MTR • Dashboard</title>
 <style>
@@ -124,13 +158,8 @@ def write_index_html(
   .header h1{{font-size:18px;margin:0}}
   .header .right{{display:flex;align-items:center;gap:8px}}
   .btn, .theme-toggle{{border:1px solid var(--outline);background:var(--panel-2);padding:6px 10px;border-radius:10px;cursor:pointer}}
-  .grid{{
-    display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
-    gap:14px
-  }}
-  .card{{
-    border:1px solid var(--outline);border-radius:var(--radius);background:var(--panel);padding:14px
-  }}
+  .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}}
+  .card{{border:1px solid var(--outline);border-radius:var(--radius);background:var(--panel);padding:14px}}
   .card-top{{display:flex;justify-content:space-between;gap:10px;align-items:center}}
   .ip{{font-weight:700}}
   .status{{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid var(--outline)}}
@@ -176,7 +205,7 @@ def write_index_html(
     <div class="section">
       <h4>Time Range</h4>
       <div class="chips">
-        {chips}
+        {chips_html}
       </div>
     </div>
 
@@ -209,44 +238,11 @@ def write_index_html(
     </div>
 
     <div class="grid" id="cards">
-""".format(
-                chips=chips_html,
-                default_range=html_escape(default_range_label),
-            ))
-
-            # --- Cards ---
-            for c in (cards or []):
-                ip   = html_escape(c["ip"])
-                desc = html_escape(c["desc"])
-                status_class = c["status_class"]
-                status_label = html_escape(c["status_label"])
-                last_seen = html_escape(c["last_seen"])
-                hops = html_escape(c["hops"])
-
-                f.write(
-                    "      <div class='card' data-ip='{ip}' data-status='{status}'>\n"
-                    "        <div class='card-top'>\n"
-                    "          <div class='ip'>{ip}</div>\n"
-                    "          <div class='status {status}' title='{label}'>{label}</div>\n"
-                    "        </div>\n"
-                    "        <div class='desc'>{desc}</div>\n"
-                    "        <div class='meta'>Last seen: {last} • Hops: {hops} • Loss: —</div>\n"
-                    "        <div class='spark' id='spark-{ip}'>[mini trend]</div>\n"
-                    "        <div class='actions'>\n"
-                    "          <a class='btn' href='{ip}.html'>View Details</a>\n"
-                    "          <a class='btn' href='logs/{ip}.log'>Logs</a>\n"
-                    "        </div>\n"
-                    "      </div>\n".format(
-                        ip=ip, status=status_class, label=status_label,
-                        desc=desc, last=last_seen, hops=hops
-                    )
-                )
-
-            # --- Footer & Drawer (with embedded YAML) + JS ---
-            f.write("""
+{cards_html}
     </div>
+
     <div class="footer">
-      Generated: """ + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + """ — Auto-refresh: """ + ("enabled" if auto_refresh_seconds > 0 else "disabled") + """
+      Generated: {generated_ts} — Auto-refresh: {refresh_state}
     </div>
   </main>
 </div>
@@ -262,8 +258,8 @@ def write_index_html(
     <div class="help">
       Edit the YAML files below, then <strong>Download</strong> them and replace on the server:
       <ul>
-        <li><code>""" + html_escape(settings_path) + """</code> — script settings</li>
-        <li><code>""" + html_escape(targets_path) + """</code> — targets</li>
+        <li><code>{settings_path}</code> — script settings</li>
+        <li><code>{targets_path}</code> — targets</li>
       </ul>
       This dashboard is static and cannot write files to disk.
     </div>
@@ -271,7 +267,7 @@ def write_index_html(
     <div class="row">
       <div class="form-group">
         <h3>mtr_script_settings.yaml</h3>
-        <textarea id="settingsTa">""" + html_escape(settings_text) + """</textarea>
+        <textarea id="settingsTa">{settings_text}</textarea>
         <div class="help">Ranges shown on the sidebar come from <code>html.ranges</code> (via <code>get_html_ranges()</code>).</div>
         <div style="margin-top:8px">
           <button class="btn" onclick="downloadYaml('mtr_script_settings.yaml', document.getElementById('settingsTa').value)">⬇ Download settings.yaml</button>
@@ -280,7 +276,7 @@ def write_index_html(
 
       <div class="form-group">
         <h3>mtr_targets.yaml</h3>
-        <textarea id="targetsTa">""" + html_escape(targets_text) + """</textarea>
+        <textarea id="targetsTa">{targets_text}</textarea>
         <div class="help">Each target supports <code>ip</code> and optional <code>description</code>.</div>
         <div style="margin-top:8px">
           <button class="btn" onclick="downloadYaml('mtr_targets.yaml', document.getElementById('targetsTa').value)">⬇ Download targets.yaml</button>
@@ -292,17 +288,17 @@ def write_index_html(
 
 <script>
   // --- Theme toggle with localStorage ---
-  (function initTheme(){
+  (function initTheme(){{
     const saved = localStorage.getItem('mtr_theme') || 'dark';
     if (saved === 'light') document.documentElement.setAttribute('data-theme','light');
-    document.getElementById('themeBtn').addEventListener('click', () => {
+    document.getElementById('themeBtn').addEventListener('click', () => {{
       const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
       const next = (cur === 'light') ? 'dark' : 'light';
       if (next === 'light') document.documentElement.setAttribute('data-theme','light');
       else document.documentElement.removeAttribute('data-theme');
       localStorage.setItem('mtr_theme', next);
-    });
-  })();
+    }});
+  }})();
 
   // --- Search + Status filters + Range label (cosmetic) ---
   const q = document.getElementById('q');
@@ -310,39 +306,39 @@ def write_index_html(
   const rangeLabel = document.getElementById('rangeLabel');
   const countEl = document.getElementById('count');
 
-  function updateVisibleCount(){
+  function updateVisibleCount(){{
     const visible = Array.from(cards.children).filter(el => el.style.display !== 'none').length;
     countEl.textContent = String(visible);
-  }
+  }}
 
-  q.addEventListener('input', () => {
+  q.addEventListener('input', () => {{
     const term = q.value.toLowerCase();
-    Array.from(cards.children).forEach(c => {
+    Array.from(cards.children).forEach(c => {{
       const ip = (c.dataset.ip || '').toLowerCase();
       const desc = (c.querySelector('.desc')?.textContent || '').toLowerCase();
       c.style.display = (ip.includes(term) || desc.includes(term)) ? '' : 'none';
-    });
+    }});
     updateVisibleCount();
-  });
+  }});
 
-  document.querySelectorAll('.chip[data-status]').forEach(chip => {
-    chip.addEventListener('click', () => {
+  document.querySelectorAll('.chip[data-status]').forEach(chip => {{
+    chip.addEventListener('click', () => {{
       const s = chip.dataset.status;
       const active = chip.classList.toggle('active');
-      document.querySelectorAll('.chip[data-status]').forEach(c => { if (c!==chip) c.classList.remove('active'); });
-      Array.from(cards.children).forEach(c => {
+      document.querySelectorAll('.chip[data-status]').forEach(c => {{ if (c!==chip) c.classList.remove('active'); }});
+      Array.from(cards.children).forEach(c => {{
         c.style.display = (!active || c.dataset.status === s) ? '' : 'none';
-      });
+      }});
       updateVisibleCount();
-    });
-  });
+    }});
+  }});
 
-  document.querySelectorAll('.chip[data-range]').forEach(chip => {
-    chip.addEventListener('click', () => {
+  document.querySelectorAll('.chip[data-range]').forEach(chip => {{
+    chip.addEventListener('click', () => {{
       rangeLabel.textContent = chip.dataset.range;
       // Future: re-render in-card sparklines for the chosen range.
-    });
-  });
+    }});
+  }});
 
   // Initial count
   updateVisibleCount();
@@ -350,10 +346,10 @@ def write_index_html(
   // --- Settings Drawer logic ---
   const drawer = document.getElementById('drawer');
   const overlay = document.getElementById('drawerOverlay');
-  function openDrawer(){ drawer.classList.add('active'); overlay.classList.add('active'); }
-  function closeDrawer(){ drawer.classList.remove('active'); overlay.classList.remove('active'); }
-  document.getElementById('openSettings').addEventListener('click', (e)=>{ e.preventDefault(); openDrawer(); });
-  document.getElementById('openSettings2').addEventListener('click', (e)=>{ e.preventDefault(); openDrawer(); });
+  function openDrawer(){{ drawer.classList.add('active'); overlay.classList.add('active'); }}
+  function closeDrawer(){{ drawer.classList.remove('active'); overlay.classList.remove('active'); }}
+  document.getElementById('openSettings').addEventListener('click', (e)=>{{ e.preventDefault(); openDrawer(); }});
+  document.getElementById('openSettings2').addEventListener('click', (e)=>{{ e.preventDefault(); openDrawer(); }});
   document.getElementById('closeDrawer').addEventListener('click', closeDrawer);
   overlay.addEventListener('click', closeDrawer);
 
@@ -369,8 +365,24 @@ def write_index_html(
   window.downloadYaml = downloadYaml;
 </script>
 
-</body></html>
-""")
-        logger.info(f"[index] Wrote {index_path} with {len(cards)} targets and embedded Settings drawer")
+</body>
+</html>
+""".format(
+        meta_refresh=meta_refresh,
+        chips_html=chips_html,
+        default_range=html_escape(default_range_label),
+        cards_html=cards_html,
+        generated_ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        refresh_state=("enabled" if auto_refresh_seconds > 0 else "disabled"),
+        settings_path=html_escape(settings_path),
+        targets_path=html_escape(targets_path),
+        settings_text=settings_text,
+        targets_text=targets_text,
+    )
+
+    # Atomic write (prevents partial/blank pages if errors occur mid-write)
+    try:
+        _atomic_write(index_path, page)
+        logger.info(f"[index] Wrote {index_path} with {len(cards)} targets and embedded Settings drawer.")
     except Exception as e:
-        logger.error(f"[index] Failed to write index.html: {e}")
+        logger.error(f"[index] Failed to write {index_path}: {e}")
